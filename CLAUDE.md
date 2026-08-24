@@ -1,6 +1,10 @@
 # PROJECT IDEA
 
-This project is a practical sandbox for applying and experimenting with knowledge gained through Claude Certified Architect — Foundations.
+This project is an example of integrating with the Anthropic Messages API,
+built as a practical sandbox for applying and experimenting with knowledge
+gained through Claude Certified Architect — Foundations. It starts from the
+basics of a clean API integration and is meant to grow with more use cases
+over time.
 
 # DOCUMENTATION
 

@@ -3,3 +3,8 @@
 /node_modules/
 /.mimosa/
 /docs/
+
+# Environment files may hold ANTHROPIC_API_KEY and must never be committed.
+.env
+.env.*
+!.env.example
