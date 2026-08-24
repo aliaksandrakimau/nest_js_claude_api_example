@@ -217,6 +217,7 @@ describe('ClaudeService', () => {
       expect(events).toEqual([
         { type: 'message_start', id: 'msg_1', model: 'claude-haiku-4-5' },
         { type: 'text_delta', text: 'Hel' },
+        { type: 'thinking_stop', signature: 'sig' },
         { type: 'text_delta', text: 'lo' },
         {
           type: 'message_stop',
@@ -278,6 +279,209 @@ describe('ClaudeService', () => {
       await expect(
         service.streamMessage({ message: 'Hi' }).next(),
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
+
+    it('emits tool_use events when Claude requests a tool call', async () => {
+      const TOOL_STREAM = [
+        {
+          type: 'message_start',
+          message: {
+            id: 'msg_2',
+            model: 'claude-haiku-4-5',
+            usage: { input_tokens: 5 },
+          },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'toolu_1',
+            name: 'calculator',
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"expr' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: 'ession":"2+2"}' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        {
+          type: 'message_delta',
+          delta: { stop_reason: 'tool_use' },
+          usage: { output_tokens: 15 },
+        },
+        { type: 'message_stop' },
+      ];
+      mockCreate.mockResolvedValue(fakeSdkStream(TOOL_STREAM));
+
+      const events = [];
+      for await (const event of service.streamMessage({ message: '2+2' })) {
+        events.push(event);
+      }
+
+      expect(events).toEqual([
+        { type: 'message_start', id: 'msg_2', model: 'claude-haiku-4-5' },
+        { type: 'tool_use_start', id: 'toolu_1', name: 'calculator' },
+        { type: 'tool_use_delta', partialJson: '{"expr' },
+        { type: 'tool_use_delta', partialJson: 'ession":"2+2"}' },
+        {
+          type: 'tool_use_stop',
+          id: 'toolu_1',
+          name: 'calculator',
+          input: { expression: '2+2' },
+        },
+        {
+          type: 'message_stop',
+          stopReason: 'tool_use',
+          usage: { inputTokens: 5, outputTokens: 15 },
+        },
+      ]);
+    });
+
+    it('emits thinking events during extended thinking', async () => {
+      const THINKING_STREAM = [
+        {
+          type: 'message_start',
+          message: {
+            id: 'msg_3',
+            model: 'claude-haiku-4-5',
+            usage: { input_tokens: 8 },
+          },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: 'Let me consider' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: ' this carefully' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'signature_delta', signature: 'sig123' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        {
+          type: 'content_block_start',
+          index: 1,
+          content_block: { type: 'text' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 1,
+          delta: { type: 'text_delta', text: 'The answer is 4' },
+        },
+        { type: 'content_block_stop', index: 1 },
+        {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: { output_tokens: 20 },
+        },
+        { type: 'message_stop' },
+      ];
+      mockCreate.mockResolvedValue(fakeSdkStream(THINKING_STREAM));
+
+      const events = [];
+      for await (const event of service.streamMessage({ message: '2+2' })) {
+        events.push(event);
+      }
+
+      expect(events).toEqual([
+        { type: 'message_start', id: 'msg_3', model: 'claude-haiku-4-5' },
+        { type: 'thinking_delta', thinking: 'Let me consider' },
+        { type: 'thinking_delta', thinking: ' this carefully' },
+        { type: 'thinking_stop', signature: 'sig123' },
+        { type: 'text_delta', text: 'The answer is 4' },
+        {
+          type: 'message_stop',
+          stopReason: 'end_turn',
+          usage: { inputTokens: 8, outputTokens: 20 },
+        },
+      ]);
+    });
+
+    it('handles multiple tool_use blocks in a single response', async () => {
+      const MULTI_TOOL_STREAM = [
+        {
+          type: 'message_start',
+          message: {
+            id: 'msg_4',
+            model: 'claude-haiku-4-5',
+            usage: { input_tokens: 5 },
+          },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'toolu_1',
+            name: 'calculator',
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"e":"1+1"}' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        {
+          type: 'content_block_start',
+          index: 1,
+          content_block: {
+            type: 'tool_use',
+            id: 'toolu_2',
+            name: 'calculator',
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 1,
+          delta: { type: 'input_json_delta', partial_json: '{"e":"3+3"}' },
+        },
+        { type: 'content_block_stop', index: 1 },
+        {
+          type: 'message_delta',
+          delta: { stop_reason: 'tool_use' },
+          usage: { output_tokens: 25 },
+        },
+        { type: 'message_stop' },
+      ];
+      mockCreate.mockResolvedValue(fakeSdkStream(MULTI_TOOL_STREAM));
+
+      const events = [];
+      for await (const event of service.streamMessage({ message: 'math' })) {
+        events.push(event);
+      }
+
+      expect(events).toEqual([
+        { type: 'message_start', id: 'msg_4', model: 'claude-haiku-4-5' },
+        { type: 'tool_use_start', id: 'toolu_1', name: 'calculator' },
+        { type: 'tool_use_delta', partialJson: '{"e":"1+1"}' },
+        { type: 'tool_use_stop', id: 'toolu_1', name: 'calculator', input: { e: '1+1' } },
+        { type: 'tool_use_start', id: 'toolu_2', name: 'calculator' },
+        { type: 'tool_use_delta', partialJson: '{"e":"3+3"}' },
+        { type: 'tool_use_stop', id: 'toolu_2', name: 'calculator', input: { e: '3+3' } },
+        {
+          type: 'message_stop',
+          stopReason: 'tool_use',
+          usage: { inputTokens: 5, outputTokens: 25 },
+        },
+      ]);
     });
   });
 

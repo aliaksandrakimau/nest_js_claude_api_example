@@ -21,10 +21,16 @@ export interface ClaudeResponse {
 
 // Events sent over the /claude/stream SSE endpoint. Each event is written as
 // one `data: <json>` frame; the consumer concatenates the `text` of successive
-// text_delta frames to assemble the full answer.
+// text_delta frames to assemble the full answer. Tool use and thinking events
+// are included so the normalized stream can serve as a complete protocol view.
 export type ClaudeStreamEvent =
   | { type: 'message_start'; id: string; model: string }
   | { type: 'text_delta'; text: string }
+  | { type: 'tool_use_start'; id: string; name: string }
+  | { type: 'tool_use_delta'; partialJson: string }
+  | { type: 'tool_use_stop'; id: string; name: string; input: unknown }
+  | { type: 'thinking_delta'; thinking: string }
+  | { type: 'thinking_stop'; signature: string }
   | { type: 'message_stop'; stopReason: string | null; usage: ClaudeUsage }
   | { type: 'error'; message: string };
 

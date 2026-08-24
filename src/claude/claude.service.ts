@@ -60,9 +60,10 @@ export class ClaudeService implements OnModuleInit {
     });
   }
 
-  // Streams the answer as normalized events: only three aggregated shapes
-  // reach the consumer (message_start id/model, text_delta, final
-  // stopReason + usage). See streamRawMessage for the unfiltered protocol.
+  // Streams the answer as normalized events: aggregated shapes reach the
+  // consumer — message_start, text_delta, tool_use_*, thinking_*, and the
+  // final message_stop with stopReason + usage. See streamRawMessage for the
+  // unfiltered protocol.
   async *streamMessage(
     request: StreamRequestDto,
   ): AsyncGenerator<ClaudeStreamEvent> {
@@ -72,6 +73,12 @@ export class ClaudeService implements OnModuleInit {
       let stopReason: string | null = null;
       let inputTokens = 0;
       let outputTokens = 0;
+
+      // Track active content blocks so we can emit typed stop events.
+      const blocks = new Map<
+        number,
+        { type: string; id?: string; name?: string; json?: string }
+      >();
 
       for await (const event of stream) {
         switch (event.type) {
@@ -83,15 +90,68 @@ export class ClaudeService implements OnModuleInit {
               model: event.message.model,
             };
             break;
-          case 'content_block_delta':
-            if (event.delta.type === 'text_delta') {
-              yield { type: 'text_delta', text: event.delta.text };
+
+          case 'content_block_start': {
+            const block = event.content_block;
+            const entry: { type: string; id?: string; name?: string } = {
+              type: block.type,
+            };
+            if (block.type === 'tool_use') {
+              entry.id = block.id;
+              entry.name = block.name;
+              blocks.set(event.index, entry);
+              yield { type: 'tool_use_start', id: block.id, name: block.name };
+            } else if (block.type === 'thinking') {
+              blocks.set(event.index, entry);
+            } else {
+              blocks.set(event.index, entry);
             }
             break;
+          }
+
+          case 'content_block_delta': {
+            const block = blocks.get(event.index);
+            if (event.delta.type === 'text_delta') {
+              yield { type: 'text_delta', text: event.delta.text };
+            } else if (event.delta.type === 'input_json_delta' && block) {
+              block.json = (block.json ?? '') + event.delta.partial_json;
+              yield {
+                type: 'tool_use_delta',
+                partialJson: event.delta.partial_json,
+              };
+            } else if (event.delta.type === 'thinking_delta') {
+              yield { type: 'thinking_delta', thinking: event.delta.thinking };
+            } else if (event.delta.type === 'signature_delta') {
+              yield { type: 'thinking_stop', signature: event.delta.signature };
+            }
+            break;
+          }
+
+          case 'content_block_stop': {
+            const block = blocks.get(event.index);
+            if (block?.type === 'tool_use') {
+              let input: unknown;
+              try {
+                input = block.json ? JSON.parse(block.json) : {};
+              } catch {
+                input = block.json;
+              }
+              yield {
+                type: 'tool_use_stop',
+                id: block.id!,
+                name: block.name!,
+                input,
+              };
+            }
+            blocks.delete(event.index);
+            break;
+          }
+
           case 'message_delta':
             stopReason = event.delta.stop_reason;
             outputTokens = event.usage.output_tokens;
             break;
+
           case 'message_stop':
             yield {
               type: 'message_stop',
