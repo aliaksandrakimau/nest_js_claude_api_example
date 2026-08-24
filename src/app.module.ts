@@ -1,13 +1,10 @@
 import { Module, ValidationPipe } from '@nestjs/common';
 import { APP_PIPE } from '@nestjs/core';
-import { AppController } from './app.controller';
-import { ClaudeService } from './claude/claude.service';
+import { ClaudeModule } from './claude/claude.module';
 
 @Module({
-  imports: [],
-  controllers: [AppController],
+  imports: [ClaudeModule],
   providers: [
-    ClaudeService,
     {
       // Registered as a provider so e2e tests get the same validation setup.
       provide: APP_PIPE,

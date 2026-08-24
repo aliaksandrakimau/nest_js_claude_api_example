@@ -1,10 +1,10 @@
 import { HttpException } from '@nestjs/common';
 import type { Response } from 'express';
 import { Test, TestingModule } from '@nestjs/testing';
-import { AppController } from './app.controller';
-import { ClaudeService } from './claude/claude.service';
-import type { ClaudeStreamEvent } from './claude/interfaces';
-import { ConversationRequestDto } from './claude/dto';
+import { ClaudeController } from './claude.controller';
+import { ClaudeService } from './claude.service';
+import type { ClaudeStreamEvent } from './interfaces';
+import { ConversationRequestDto } from './dto';
 
 // Minimal async iterable standing in for the service's stream generators.
 function streamOf<T extends { type: string }>(events: T[]): AsyncGenerator<T> {
@@ -39,8 +39,8 @@ interface SseResponseMock {
   writes: string[];
 }
 
-describe('AppController', () => {
-  let controller: AppController;
+describe('ClaudeController', () => {
+  let controller: ClaudeController;
   let claudeService: {
     sendMessage: jest.Mock;
     createConversation: jest.Mock;
@@ -77,11 +77,11 @@ describe('AppController', () => {
     };
 
     const module: TestingModule = await Test.createTestingModule({
-      controllers: [AppController],
+      controllers: [ClaudeController],
       providers: [{ provide: ClaudeService, useValue: claudeService }],
     }).compile();
 
-    controller = module.get<AppController>(AppController);
+    controller = module.get<ClaudeController>(ClaudeController);
   });
 
   it('sendMessage delegates to ClaudeService', async () => {

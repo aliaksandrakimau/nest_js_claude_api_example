@@ -9,24 +9,24 @@ import {
 // Type-only import: a decorated signature must not emit a runtime reference
 // to a type-only symbol under isolatedModules + emitDecoratorMetadata.
 import type { Response as ExpressResponse } from 'express';
-import { ClaudeService } from './claude/claude.service';
+import { ClaudeService } from './claude.service';
 import {
   ConversationRequestDto,
   SendMessageRequestDto,
   StreamRequestDto,
-} from './claude/dto';
-import type { ClaudeModel, ClaudeResponse } from './claude/interfaces';
+} from './dto';
+import type { ClaudeModel, ClaudeResponse } from './interfaces';
 
-@Controller()
-export class AppController {
+@Controller('claude')
+export class ClaudeController {
   constructor(private readonly claudeService: ClaudeService) {}
 
-  @Post('claude/message')
+  @Post('message')
   sendMessage(@Body() request: SendMessageRequestDto): Promise<ClaudeResponse> {
     return this.claudeService.sendMessage(request);
   }
 
-  @Post('claude/conversation')
+  @Post('conversation')
   createConversation(
     @Body() request: ConversationRequestDto,
   ): Promise<ClaudeResponse> {
@@ -35,7 +35,7 @@ export class AppController {
 
   // Normalized stream: three aggregated event shapes, one JSON payload per
   // `data:` frame. Easiest to consume; see /claude/raw-stream for fidelity.
-  @Post('claude/stream')
+  @Post('stream')
   async streamCompletion(
     @Body() request: StreamRequestDto,
     @Res() res: ExpressResponse,
@@ -50,7 +50,7 @@ export class AppController {
   // Raw pass-through: forwards the full Anthropic protocol unchanged. Each
   // frame mirrors the upstream wire format exactly — an `event:` line naming
   // the type plus the untouched JSON payload on a `data:` line.
-  @Post('claude/raw-stream')
+  @Post('raw-stream')
   async streamRawCompletion(
     @Body() request: StreamRequestDto,
     @Res() res: ExpressResponse,
@@ -117,7 +117,7 @@ export class AppController {
     }
   }
 
-  @Get('claude/models')
+  @Get('models')
   listModels(): Promise<ClaudeModel[]> {
     return this.claudeService.listModels();
   }
