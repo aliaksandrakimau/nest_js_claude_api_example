@@ -4,36 +4,28 @@ This project is a practical sandbox for applying and experimenting with knowledg
 
 # DOCUMENTATION
 
-`docs/` is the source of truth for this project's conceptual and methodological
-material. The documentation map below is always in context; the documents
-themselves are read on demand — never import the whole tree.
+`docs/` holds personal course notes (AI Fluency materials). It is **not** a
+source of truth for this project: it is gitignored, exists only on this
+machine, and may be missing entirely on other copies of the repository.
 
-@docs/INDEX.md
-
-## Mandatory workflow
-
-1. **Before starting any task in this project**, consult the map above
-   (`docs/INDEX.md`) and identify the documents relevant to the task.
-2. **Read every relevant document in full** (the files are small) before
-   writing code, answering questions, or making design decisions. Do not act
-   on the one-line summaries in the map alone.
-3. If no document in the map is relevant, say so briefly and proceed.
+- If `docs/` is present locally, `docs/INDEX.md` maps its contents, including
+  the terminology glossary at
+  `docs/AI Fluency (Framework & Foundations)/Al Fluency- Key Terminology Cheat Sheet.md`.
+- Consult those notes only when a task explicitly touches course concepts or
+  framework terminology (4Ds, interaction modes, etc.). Never block a task
+  because `docs/` is absent.
+- Read individual documents on demand; never import the whole tree.
 
 ## Priority on conflict
 
-- Documentation in `docs/` **overrides your general knowledge**. When they
-  disagree, follow the documents.
-- When a task or term is ambiguous, **find and read the corresponding
-  document first** instead of guessing. For framework terminology (4Ds,
-  interaction modes, etc.), the glossary is
-  `docs/AI Fluency (Framework & Foundations)/Al Fluency- Key Terminology Cheat Sheet.md`.
-- For runtime behavior the code in `src/` is authoritative; `docs/` covers
-  concepts and methodology, not the API implementation.
+- For runtime behavior, the code in `src/` is authoritative.
+- `docs/` notes cover concepts and methodology, not the API implementation;
+  they do not override the code or these rules.
 
-## Maintenance
+## Maintenance (local notes)
 
-- When adding, removing, or renaming a `.md` file under `docs/`, update
-  `docs/INDEX.md` in the same change.
+- When adding, removing, or renaming a `.md` file under `docs/`, keep the
+  local `docs/INDEX.md` up to date so the map stays usable.
 
 # RULES
 
