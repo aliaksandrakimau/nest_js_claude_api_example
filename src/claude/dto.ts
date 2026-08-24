@@ -78,3 +78,19 @@ export class StreamRequestDto extends ClaudeRequestOptionsDto {
   @Type(() => ConversationMessageDto)
   messages?: ConversationMessageDto[];
 }
+
+// Same shape as StreamRequestDto, but served by the tool-orchestrating /chat
+// endpoint. Kept as a distinct class so the two endpoints can diverge later
+// (e.g. per-request tool selection) without breaking the stream contract.
+export class ChatRequestDto extends ClaudeRequestOptionsDto {
+  @ValidateIf((o: ChatRequestDto) => o.messages === undefined)
+  @IsString()
+  @Matches(/\S/)
+  message?: string;
+
+  @ValidateIf((o: ChatRequestDto) => o.message === undefined)
+  @ArrayNotEmpty()
+  @ValidateNested({ each: true })
+  @Type(() => ConversationMessageDto)
+  messages?: ConversationMessageDto[];
+}

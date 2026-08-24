@@ -8,6 +8,11 @@ import Anthropic, {
   RateLimitError,
   UnprocessableEntityError,
 } from '@anthropic-ai/sdk';
+import type {
+  ContentBlockParam,
+  ToolResultBlockParam,
+  ToolUseBlockParam,
+} from '@anthropic-ai/sdk/resources/messages/messages';
 import {
   BadRequestException,
   HttpException,
@@ -17,10 +22,12 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
+  ChatRequestDto,
   ConversationRequestDto,
   SendMessageRequestDto,
   StreamRequestDto,
 } from './dto';
+import { ToolRegistryService } from './tools/tool-registry.service';
 import type {
   ClaudeApiMessage,
   ClaudeModel,
@@ -32,10 +39,15 @@ import type {
 
 const DEFAULT_MODEL = 'claude-haiku-4-5';
 const DEFAULT_MAX_TOKENS = 1000;
+// Safety bound for the tool orchestration loop: a misbehaving model that
+// keeps requesting tools cannot spin the conversation forever.
+const MAX_TOOL_ROUNDS = 10;
 
 @Injectable()
 export class ClaudeService implements OnModuleInit {
   private client?: Anthropic;
+
+  constructor(private readonly toolRegistry: ToolRegistryService) {}
 
   // Fail fast at bootstrap instead of failing on the first request.
   onModuleInit(): void {
@@ -166,6 +178,206 @@ export class ClaudeService implements OnModuleInit {
       // breaking out of the loop runs this block through generator return().
       stream.controller.abort();
     }
+  }
+
+  // Full agent loop over registered tools: streams normalized events to the
+  // consumer while transparently running tool calls requested by the model.
+  // Each round: open a stream with tools attached; if the model stops with
+  // stop_reason 'tool_use', run every requested tool through the registry,
+  // append assistant + tool_result turns to the history and start the next
+  // round. The final message_stop carries usage summed across all rounds.
+  async *streamWithTools(
+    request: ChatRequestDto,
+  ): AsyncGenerator<ClaudeStreamEvent> {
+    if (!this.toolRegistry.hasTools()) {
+      throw new BadRequestException(
+        'No tools are registered; /chat requires at least one tool handler',
+      );
+    }
+    if (request.message !== undefined && request.messages !== undefined) {
+      throw new BadRequestException(
+        'Provide either "message" or "messages", not both',
+      );
+    }
+
+    const messages: ClaudeApiMessage[] = request.messages ?? [
+      { role: 'user', content: request.message ?? '' },
+    ];
+    const tools = this.toolRegistry.getToolDefinitions();
+
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      let upstream: UpstreamStream;
+      try {
+        upstream = await this.getClient().messages.create({
+          ...this.options(request),
+          messages,
+          tools,
+          stream: true,
+        });
+      } catch (error) {
+        this.mapSdkError(error);
+      }
+
+      try {
+        let stopReason: string | null = null;
+        // Blocks of the assistant turn being streamed, replayed into history
+        // when the model asks for tools next round.
+        const assistantBlocks: ContentBlockParam[] = [];
+        const pendingToolCalls: ToolUseBlockParam[] = [];
+        const blockInputs = new Map<number, string>();
+        // Maps upstream content-block index -> position in pendingToolCalls,
+        // because block indices count text blocks too while the calls array
+        // only holds tool_use entries.
+        const blockToCall = new Map<number, number>();
+
+        for await (const event of upstream) {
+          switch (event.type) {
+            case 'message_start':
+              totalInputTokens += event.message.usage.input_tokens;
+              yield {
+                type: 'message_start',
+                id: event.message.id,
+                model: event.message.model,
+              };
+              break;
+
+            case 'content_block_start':
+              if (event.content_block.type === 'tool_use') {
+                blockInputs.set(event.index, '');
+                blockToCall.set(event.index, pendingToolCalls.length);
+                pendingToolCalls.push({
+                  type: 'tool_use',
+                  id: event.content_block.id,
+                  name: event.content_block.name,
+                  input: {},
+                });
+                yield {
+                  type: 'tool_use_start',
+                  id: event.content_block.id,
+                  name: event.content_block.name,
+                };
+              } else if (event.content_block.type === 'text') {
+                assistantBlocks.push({
+                  type: 'text',
+                  text: '',
+                });
+              }
+              break;
+
+            case 'content_block_delta':
+              if (event.delta.type === 'text_delta') {
+                const textBlock = assistantBlocks[assistantBlocks.length - 1];
+                if (textBlock?.type === 'text') {
+                  textBlock.text += event.delta.text;
+                }
+                yield { type: 'text_delta', text: event.delta.text };
+              } else if (event.delta.type === 'input_json_delta') {
+                const accumulated =
+                  (blockInputs.get(event.index) ?? '') +
+                  event.delta.partial_json;
+                blockInputs.set(event.index, accumulated);
+                yield {
+                  type: 'tool_use_delta',
+                  partialJson: event.delta.partial_json,
+                };
+              } else if (event.delta.type === 'thinking_delta') {
+                yield {
+                  type: 'thinking_delta',
+                  thinking: event.delta.thinking,
+                };
+              } else if (event.delta.type === 'signature_delta') {
+                yield {
+                  type: 'thinking_stop',
+                  signature: event.delta.signature,
+                };
+              }
+              break;
+
+            case 'content_block_stop': {
+              const rawJson = blockInputs.get(event.index);
+              if (rawJson === undefined) {
+                break;
+              }
+              blockInputs.delete(event.index);
+              let parsedInput: unknown;
+              try {
+                parsedInput = rawJson ? JSON.parse(rawJson) : {};
+              } catch {
+                parsedInput = {};
+              }
+              const callPosition = blockToCall.get(event.index);
+              if (callPosition !== undefined) {
+                const call = pendingToolCalls[callPosition];
+                call.input = parsedInput;
+                yield {
+                  type: 'tool_use_stop',
+                  id: call.id,
+                  name: call.name,
+                  input: parsedInput,
+                };
+              }
+              break;
+            }
+
+            case 'message_delta':
+              stopReason = event.delta.stop_reason;
+              totalOutputTokens += event.usage.output_tokens;
+              break;
+
+            case 'message_stop':
+              // Emitted once, after the loop decides this is the final round.
+              break;
+          }
+        }
+
+        if (stopReason !== 'tool_use' || pendingToolCalls.length === 0) {
+          yield {
+            type: 'message_stop',
+            stopReason,
+            usage: {
+              inputTokens: totalInputTokens,
+              outputTokens: totalOutputTokens,
+            },
+          };
+          return;
+        }
+
+        // Replay the assistant turn (any text + every tool call) so the API
+        // can correlate the tool results that follow in the next request.
+        if (assistantBlocks.length > 0 || pendingToolCalls.length > 0) {
+          messages.push({
+            role: 'assistant',
+            content: [...assistantBlocks, ...pendingToolCalls],
+          });
+        }
+
+        const toolResults: ToolResultBlockParam[] = [];
+        for (const call of pendingToolCalls) {
+          const result = await this.toolRegistry.dispatch(
+            call.name,
+            call.input as Record<string, unknown>,
+          );
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: call.id,
+            content: result,
+          });
+        }
+        messages.push({ role: 'user', content: toolResults });
+      } finally {
+        // Cancel the current round's upstream request when the consumer
+        // disconnects between rounds or mid-stream.
+        upstream.controller.abort();
+      }
+    }
+
+    throw new HttpException(
+      ['Tool orchestration exceeded', MAX_TOOL_ROUNDS, 'rounds'].join(' '),
+      HttpStatus.BAD_GATEWAY,
+    );
   }
 
   // Streams the UNMODIFIED Anthropic protocol. Where streamMessage collapses

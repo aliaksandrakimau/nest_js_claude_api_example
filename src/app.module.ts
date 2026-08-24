@@ -1,9 +1,11 @@
 import { Module, ValidationPipe } from '@nestjs/common';
 import { APP_PIPE } from '@nestjs/core';
 import { ClaudeModule } from './claude/claude.module';
+import { ToolsModule } from './claude/tools/tools.module';
+import { CalculatorTool } from './claude/tools/example-tool';
 
 @Module({
-  imports: [ClaudeModule],
+  imports: [ClaudeModule, ToolsModule.forRoot([CalculatorTool])],
   providers: [
     {
       // Registered as a provider so e2e tests get the same validation setup.

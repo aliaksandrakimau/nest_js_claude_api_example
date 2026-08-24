@@ -15,9 +15,12 @@ import {
   RateLimitError,
 } from '@anthropic-ai/sdk';
 import { ClaudeService } from './claude.service';
+import { ToolRegistryService } from './tools/tool-registry.service';
 
 const mockCreate = jest.fn<(...args: unknown[]) => Promise<unknown>>();
 const mockList = jest.fn<() => Promise<unknown>>();
+const mockDispatch =
+  jest.fn<(name: string, input: Record<string, unknown>) => Promise<string>>();
 
 jest.mock('@anthropic-ai/sdk', () => {
   const actual =
@@ -77,13 +80,31 @@ describe('ClaudeService', () => {
   let service: ClaudeService;
   const originalKey = process.env.ANTHROPIC_API_KEY;
 
+  // Registry stub exposing one calculator-like tool by default.
+  const toolRegistry = {
+    hasTools: jest.fn(() => true),
+    getToolDefinitions: jest.fn(() => [
+      {
+        name: 'calculator',
+        description: 'math',
+        input_schema: { type: 'object', properties: {} },
+      },
+    ]),
+    dispatch: mockDispatch,
+  };
+
   beforeEach(async () => {
     process.env.ANTHROPIC_API_KEY = 'test-key';
     mockCreate.mockReset();
     mockList.mockReset();
+    mockDispatch.mockReset();
+    jest.spyOn(toolRegistry, 'hasTools').mockImplementation(() => true);
 
     const moduleRef = await Test.createTestingModule({
-      providers: [ClaudeService],
+      providers: [
+        ClaudeService,
+        { provide: ToolRegistryService, useValue: toolRegistry },
+      ],
     }).compile();
 
     service = moduleRef.get(ClaudeService);
@@ -472,10 +493,20 @@ describe('ClaudeService', () => {
         { type: 'message_start', id: 'msg_4', model: 'claude-haiku-4-5' },
         { type: 'tool_use_start', id: 'toolu_1', name: 'calculator' },
         { type: 'tool_use_delta', partialJson: '{"e":"1+1"}' },
-        { type: 'tool_use_stop', id: 'toolu_1', name: 'calculator', input: { e: '1+1' } },
+        {
+          type: 'tool_use_stop',
+          id: 'toolu_1',
+          name: 'calculator',
+          input: { e: '1+1' },
+        },
         { type: 'tool_use_start', id: 'toolu_2', name: 'calculator' },
         { type: 'tool_use_delta', partialJson: '{"e":"3+3"}' },
-        { type: 'tool_use_stop', id: 'toolu_2', name: 'calculator', input: { e: '3+3' } },
+        {
+          type: 'tool_use_stop',
+          id: 'toolu_2',
+          name: 'calculator',
+          input: { e: '3+3' },
+        },
         {
           type: 'message_stop',
           stopReason: 'tool_use',
@@ -572,6 +603,181 @@ describe('ClaudeService', () => {
       await expect(
         service.streamRawMessage({ message: 'Hi' }).next(),
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
+  });
+
+  describe('streamWithTools', () => {
+    const ROUND_START = {
+      type: 'message_start',
+      message: {
+        id: 'msg_r',
+        model: 'claude-haiku-4-5',
+        usage: { input_tokens: 10 },
+      },
+    };
+
+    function toolRoundEvents(stopReason = 'tool_use') {
+      return [
+        ROUND_START,
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'toolu_1',
+            name: 'calculator',
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"expression":"2+2"}',
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        {
+          type: 'message_delta',
+          delta: { stop_reason: stopReason },
+          usage: { output_tokens: 12 },
+        },
+        { type: 'message_stop' },
+      ];
+    }
+
+    const FINAL_ROUND_EVENTS = [
+      {
+        type: 'message_start',
+        message: {
+          id: 'msg_final',
+          model: 'claude-haiku-4-5',
+          usage: { input_tokens: 25 },
+        },
+      },
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'The answer is 4' },
+      },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: { output_tokens: 8 },
+      },
+      { type: 'message_stop' },
+    ];
+
+    it('runs one round when the model answers without calling tools', async () => {
+      mockCreate.mockResolvedValueOnce(fakeSdkStream(FINAL_ROUND_EVENTS));
+
+      const events = [];
+      for await (const event of service.streamWithTools({ message: 'hi' })) {
+        events.push(event);
+      }
+
+      expect(mockDispatch).not.toHaveBeenCalled();
+      expect(events.at(-1)).toEqual({
+        type: 'message_stop',
+        stopReason: 'end_turn',
+        usage: { inputTokens: 25, outputTokens: 8 },
+      });
+    });
+
+    it('runs the tool and continues until the final answer', async () => {
+      mockCreate
+        .mockResolvedValueOnce(fakeSdkStream(toolRoundEvents()))
+        .mockResolvedValueOnce(fakeSdkStream(FINAL_ROUND_EVENTS));
+      mockDispatch.mockResolvedValue('4');
+
+      const events = [];
+      for await (const event of service.streamWithTools({ message: '2+2?' })) {
+        events.push(event);
+      }
+
+      expect(mockDispatch).toHaveBeenCalledTimes(1);
+      expect(mockDispatch).toHaveBeenCalledWith('calculator', {
+        expression: '2+2',
+      });
+
+      // The tool result must be fed back with matching ids.
+      const secondCallParams = (mockCreate.mock.calls[1] as unknown[])[0] as {
+        messages: unknown;
+        tools: unknown;
+      };
+      expect(secondCallParams.messages).toEqual([
+        { role: 'user', content: '2+2?' },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_1',
+              name: 'calculator',
+              input: { expression: '2+2' },
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_1', content: '4' },
+          ],
+        },
+      ]);
+      expect(secondCallParams.tools).toEqual([
+        {
+          name: 'calculator',
+          description: 'math',
+          input_schema: { type: 'object', properties: {} },
+        },
+      ]);
+
+      // Every round surfaces its own message_start; usage accumulates into
+      // the single terminal message_stop.
+      expect(events).toEqual([
+        { type: 'message_start', id: 'msg_r', model: 'claude-haiku-4-5' },
+        { type: 'tool_use_start', id: 'toolu_1', name: 'calculator' },
+        { type: 'tool_use_delta', partialJson: '{"expression":"2+2"}' },
+        {
+          type: 'tool_use_stop',
+          id: 'toolu_1',
+          name: 'calculator',
+          input: { expression: '2+2' },
+        },
+        { type: 'message_start', id: 'msg_final', model: 'claude-haiku-4-5' },
+        { type: 'text_delta', text: 'The answer is 4' },
+        {
+          type: 'message_stop',
+          stopReason: 'end_turn',
+          usage: { inputTokens: 35, outputTokens: 20 },
+        },
+      ]);
+    });
+
+    it('rejects when no tools are registered', async () => {
+      jest.spyOn(toolRegistry, 'hasTools').mockImplementation(() => false);
+
+      await expect(
+        service.streamWithTools({ message: 'hi' }).next(),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects message combined with messages', async () => {
+      await expect(
+        service
+          .streamWithTools({
+            message: 'Hi',
+            messages: [{ role: 'user', content: 'Hi again' }],
+          })
+          .next(),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 

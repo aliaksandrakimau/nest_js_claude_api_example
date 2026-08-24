@@ -245,6 +245,134 @@ describe('Claude endpoints (e2e)', () => {
       .expect(400);
   });
 
+  it('POST /claude/chat runs the requested tool and streams the final answer', () => {
+    // Round 1: model requests the calculator tool.
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeSdkStream([
+          {
+            type: 'message_start',
+            message: {
+              id: 'msg_r1',
+              model: 'claude-haiku-4-5',
+              usage: { input_tokens: 10 },
+            },
+          },
+          {
+            type: 'content_block_start',
+            index: 0,
+            content_block: {
+              type: 'tool_use',
+              id: 'toolu_1',
+              name: 'calculator',
+            },
+          },
+          {
+            type: 'content_block_delta',
+            index: 0,
+            delta: {
+              type: 'input_json_delta',
+              partial_json: '{"expression":"2+2"}',
+            },
+          },
+          { type: 'content_block_stop', index: 0 },
+          {
+            type: 'message_delta',
+            delta: { stop_reason: 'tool_use' },
+            usage: { output_tokens: 12 },
+          },
+          { type: 'message_stop' },
+        ]),
+      )
+      // Round 2: model produces the final answer.
+      .mockResolvedValueOnce(
+        fakeSdkStream([
+          {
+            type: 'message_start',
+            message: {
+              id: 'msg_r2',
+              model: 'claude-haiku-4-5',
+              usage: { input_tokens: 20 },
+            },
+          },
+          {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'text' },
+          },
+          {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'It is 4' },
+          },
+          { type: 'content_block_stop', index: 0 },
+          {
+            type: 'message_delta',
+            delta: { stop_reason: 'end_turn' },
+            usage: { output_tokens: 5 },
+          },
+          { type: 'message_stop' },
+        ]),
+      );
+
+    return request(app.getHttpServer())
+      .post('/claude/chat')
+      .send({ message: 'What is 2+2?' })
+      .expect(200)
+      .expect('Content-Type', /text\/event-stream/)
+      .expect((res) => {
+        const events = parseSseFrames(res.text);
+        expect(events).toEqual([
+          { type: 'message_start', id: 'msg_r1', model: 'claude-haiku-4-5' },
+          { type: 'tool_use_start', id: 'toolu_1', name: 'calculator' },
+          { type: 'tool_use_delta', partialJson: '{"expression":"2+2"}' },
+          {
+            type: 'tool_use_stop',
+            id: 'toolu_1',
+            name: 'calculator',
+            input: { expression: '2+2' },
+          },
+          { type: 'message_start', id: 'msg_r2', model: 'claude-haiku-4-5' },
+          { type: 'text_delta', text: 'It is 4' },
+          {
+            type: 'message_stop',
+            stopReason: 'end_turn',
+            usage: { inputTokens: 30, outputTokens: 17 },
+          },
+        ]);
+        // The tool result round-trips through the second request.
+        expect((mockCreate.mock.calls[1] as unknown[])[0]).toMatchObject({
+          messages: [
+            { role: 'user', content: 'What is 2+2?' },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_1',
+                  name: 'calculator',
+                  input: { expression: '2+2' },
+                },
+              ],
+            },
+            {
+              role: 'user',
+              content: [
+                { type: 'tool_result', tool_use_id: 'toolu_1', content: '4' },
+              ],
+            },
+          ],
+        });
+      });
+  });
+
+  it('POST /claude/chat rejects a body without message or messages', () => {
+    return request(app.getHttpServer())
+      .post('/claude/chat')
+      .send({ model: 'claude-haiku-4-5' })
+      .expect(400);
+  });
+
   it('GET /claude/models returns mapped models', () => {
     mockList.mockResolvedValue({
       data: [

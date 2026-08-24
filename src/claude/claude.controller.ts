@@ -11,6 +11,7 @@ import {
 import type { Response as ExpressResponse } from 'express';
 import { ClaudeService } from './claude.service';
 import {
+  ChatRequestDto,
   ConversationRequestDto,
   SendMessageRequestDto,
   StreamRequestDto,
@@ -59,6 +60,22 @@ export class ClaudeController {
       res,
       this.claudeService.streamRawMessage(request),
       (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+    );
+  }
+
+  // Agent endpoint: like /stream, but tool calls requested by the model are
+  // run automatically against the registered handlers; the conversation
+  // continues until the model produces a final answer. Emits the same
+  // normalized event shapes as /claude/stream.
+  @Post('chat')
+  async chatCompletion(
+    @Body() request: ChatRequestDto,
+    @Res() res: ExpressResponse,
+  ): Promise<void> {
+    await this.writeSse(
+      res,
+      this.claudeService.streamWithTools(request),
+      (event) => `data: ${JSON.stringify(event)}\n\n`,
     );
   }
 
