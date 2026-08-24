@@ -1,0 +1,66 @@
+// IntelliJ IDEA built-in HTTP Client.
+// The `host` variable comes from http-client.env.json (pick the environment
+// in the selector above the editor). Start the app first: npm run start:dev.
+
+### List models
+GET {{host}}/claude/models
+
+### Single message
+POST {{host}}/claude/message
+Content-Type: application/json
+
+{
+  "message": "Explain what NestJS is in two sentences",
+  "maxTokens": 300,
+  "temperature": 0.7
+}
+
+### Conversation with history
+POST {{host}}/claude/conversation
+Content-Type: application/json
+
+{
+  "messages": [
+    { "role": "user", "content": "What is dependency injection?" },
+    { "role": "assistant", "content": "A way to pass dependencies from outside." },
+    { "role": "user", "content": "Show a short example." }
+  ]
+}
+
+### Streamed answer (SSE)
+POST {{host}}/claude/stream
+Content-Type: application/json
+
+{
+  "message": "Write a haiku about streams"
+}
+
+### Streamed conversation (SSE)
+POST {{host}}/claude/stream
+Content-Type: application/json
+
+{
+  "messages": [
+    { "role": "user", "content": "My name is Aliaksandr" },
+    { "role": "assistant", "content": "Nice to meet you!" },
+    { "role": "user", "content": "What is my name?" }
+  ]
+}
+
+### Validation check: temperature outside [0, 1] must return 400
+POST {{host}}/claude/message
+Content-Type: application/json
+
+{
+  "message": "Hello",
+  "temperature": 1.5
+}
+
+### Validation check: stream accepts either message or messages, not both
+POST {{host}}/claude/stream
+Content-Type: application/json
+
+{
+  "message": "Hello",
+  "messages": [{ "role": "user", "content": "Hello" }]
+}

@@ -81,6 +81,22 @@ limits, `503` when the configured key or connection is broken, `400` for
 requests the API considers invalid (e.g. an unknown model) and `502` for any
 other API error.
 
+## Probing endpoints from IntelliJ IDEA
+
+`requests.http` contains ready-to-run requests for all four endpoints
+(including SSE streaming and a few invalid payloads that demonstrate `400`
+responses). Open it in IntelliJ IDEA, start the app with `npm run start:dev`,
+pick an environment in the selector above the editor and click the run icon
+next to any request.
+
+The environment variables live in `http-client.env.json`. If you ever need
+personal overrides or tokens there, put them into
+`http-client.private.env.json` — it is gitignored and takes precedence over
+the public file.
+
+SSE responses are rendered incrementally by the HTTP Client, so streamed
+frames appear as they arrive.
+
 ## Testing
 
 ```bash

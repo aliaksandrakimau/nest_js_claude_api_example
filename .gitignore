@@ -8,3 +8,6 @@
 .env
 .env.*
 !.env.example
+
+# Private IntelliJ HTTP Client environment (tokens, personal overrides).
+http-client.private.env.json
