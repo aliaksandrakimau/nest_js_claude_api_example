@@ -8,7 +8,6 @@ import Anthropic, {
   RateLimitError,
   UnprocessableEntityError,
 } from '@anthropic-ai/sdk';
-import type { RawMessageStreamEvent } from '@anthropic-ai/sdk/resources/messages/messages';
 import {
   BadRequestException,
   HttpException,
@@ -22,11 +21,13 @@ import {
   SendMessageRequestDto,
   StreamRequestDto,
 } from './dto';
-import {
+import type {
   ClaudeApiMessage,
   ClaudeModel,
+  ClaudeRawStreamEvent,
   ClaudeResponse,
   ClaudeStreamEvent,
+  UpstreamStream,
 } from './interfaces';
 
 const DEFAULT_MODEL = 'claude-haiku-4-5';
@@ -59,34 +60,13 @@ export class ClaudeService implements OnModuleInit {
     });
   }
 
-  // Streams the answer as normalized events. The SDK request is only started
-  // when the consumer pulls the first event, so validation errors surface
-  // before any byte is written to the HTTP response.
+  // Streams the answer as normalized events: only three aggregated shapes
+  // reach the consumer (message_start id/model, text_delta, final
+  // stopReason + usage). See streamRawMessage for the unfiltered protocol.
   async *streamMessage(
     request: StreamRequestDto,
   ): AsyncGenerator<ClaudeStreamEvent> {
-    if (request.message !== undefined && request.messages !== undefined) {
-      throw new BadRequestException(
-        'Provide either "message" or "messages", not both',
-      );
-    }
-
-    const messages: ClaudeApiMessage[] = request.messages ?? [
-      { role: 'user', content: request.message ?? '' },
-    ];
-
-    let stream: AsyncIterable<RawMessageStreamEvent> & {
-      controller: AbortController;
-    };
-    try {
-      stream = await this.getClient().messages.create({
-        ...this.options(request),
-        messages,
-        stream: true,
-      });
-    } catch (error) {
-      this.mapSdkError(error);
-    }
+    const stream = await this.openStream(request);
 
     try {
       let stopReason: string | null = null;
@@ -125,6 +105,51 @@ export class ClaudeService implements OnModuleInit {
       // Stop the upstream request even when the client disconnects mid-stream:
       // breaking out of the loop runs this block through generator return().
       stream.controller.abort();
+    }
+  }
+
+  // Streams the UNMODIFIED Anthropic protocol. Where streamMessage collapses
+  // the wire format into three shapes, this yields every event the API emits:
+  // message_start -> [content_block_start -> content_block_delta* ->
+  // content_block_stop]* -> message_delta -> message_stop, plus ping
+  // keepalives anywhere in between. Consumers must tolerate unknown event and
+  // delta types — Anthropic extends the protocol without version bumps.
+  async *streamRawMessage(
+    request: StreamRequestDto,
+  ): AsyncGenerator<ClaudeRawStreamEvent> {
+    const stream = await this.openStream(request);
+
+    try {
+      // yield* delegates iteration unchanged — a pure pass-through.
+      yield* stream;
+    } finally {
+      stream.controller.abort();
+    }
+  }
+
+  // Shared prologue for both stream generators: enforce the XOR rule, build
+  // the message list and open the upstream request. Everything here runs on
+  // the generator's first pull, so validation errors surface before any byte
+  // is written to the HTTP response.
+  private async openStream(request: StreamRequestDto): Promise<UpstreamStream> {
+    if (request.message !== undefined && request.messages !== undefined) {
+      throw new BadRequestException(
+        'Provide either "message" or "messages", not both',
+      );
+    }
+
+    const messages: ClaudeApiMessage[] = request.messages ?? [
+      { role: 'user', content: request.message ?? '' },
+    ];
+
+    try {
+      return await this.getClient().messages.create({
+        ...this.options(request),
+        messages,
+        stream: true,
+      });
+    } catch (error) {
+      this.mapSdkError(error);
     }
   }
 

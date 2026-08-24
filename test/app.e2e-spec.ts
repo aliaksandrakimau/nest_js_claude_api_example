@@ -180,6 +180,71 @@ describe('Claude endpoints (e2e)', () => {
       .expect(400);
   });
 
+  it('POST /claude/raw-stream forwards the unmodified Anthropic protocol', () => {
+    // Full lifecycle slice, including events the normalized endpoint drops.
+    const sdkEvents = [
+      {
+        type: 'message_start',
+        message: {
+          id: 'msg_1',
+          model: 'claude-haiku-4-5',
+          usage: { input_tokens: 10 },
+        },
+      },
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      },
+      { type: 'ping' },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'Hel' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'lo' },
+      },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: { output_tokens: 2 },
+      },
+      { type: 'message_stop' },
+    ];
+    mockCreate.mockResolvedValue(fakeSdkStream(sdkEvents));
+
+    return request(app.getHttpServer())
+      .post('/claude/raw-stream')
+      .send({ message: 'Hi' })
+      .expect(200)
+      .expect('Content-Type', /text\/event-stream/)
+      .expect((res) => {
+        // Exact-string assertion: every frame keeps the upstream wire format,
+        // an `event:` line plus the untouched payload on a `data:` line.
+        const expected = sdkEvents
+          .map(
+            (event) =>
+              `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+          )
+          .join('');
+        expect(res.text).toBe(expected);
+      });
+  });
+
+  it('POST /claude/raw-stream rejects message combined with messages', () => {
+    return request(app.getHttpServer())
+      .post('/claude/raw-stream')
+      .send({
+        message: 'Hi',
+        messages: [{ role: 'user', content: 'Hi again' }],
+      })
+      .expect(400);
+  });
+
   it('GET /claude/models returns mapped models', () => {
     mockList.mockResolvedValue({
       data: [

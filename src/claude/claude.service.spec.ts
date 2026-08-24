@@ -281,6 +281,96 @@ describe('ClaudeService', () => {
     });
   });
 
+  describe('streamRawMessage', () => {
+    // A deliberately varied slice of the real protocol: block lifecycle,
+    // a keepalive ping and non-text deltas must all survive untouched.
+    const RAW_STREAM = [
+      {
+        type: 'message_start',
+        message: {
+          id: 'msg_1',
+          model: 'claude-haiku-4-5',
+          usage: { input_tokens: 10 },
+        },
+      },
+      { type: 'ping' },
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'Hel' },
+      },
+      // Normalization would drop this; raw pass-through keeps it.
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'signature_delta', signature: 'sig' },
+      },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: { output_tokens: 2 },
+      },
+      { type: 'message_stop' },
+    ];
+
+    it('yields upstream events verbatim, without aggregating anything', async () => {
+      mockCreate.mockResolvedValue(fakeSdkStream(RAW_STREAM));
+
+      const events = [];
+      for await (const event of service.streamRawMessage({ message: 'Hi' })) {
+        events.push(event);
+      }
+
+      expect(events).toEqual(RAW_STREAM);
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messages: [{ role: 'user', content: 'Hi' }],
+          stream: true,
+        }),
+      );
+    });
+
+    it('rejects message combined with messages', async () => {
+      await expect(
+        service
+          .streamRawMessage({
+            message: 'Hi',
+            messages: [{ role: 'user', content: 'Hi again' }],
+          })
+          .next(),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('aborts the upstream request when the consumer leaves early', async () => {
+      const stream = fakeSdkStream(RAW_STREAM);
+      const abortSpy = jest.spyOn(stream.controller, 'abort');
+      mockCreate.mockResolvedValue(stream);
+
+      for await (const event of service.streamRawMessage({ message: 'Hi' })) {
+        expect(event.type).toBe('message_start');
+        break;
+      }
+
+      expect(abortSpy).toHaveBeenCalled();
+    });
+
+    it('maps SDK failures raised before the first event', async () => {
+      mockCreate.mockRejectedValue(
+        new AuthenticationError(401, {}, 'invalid x-api-key', sdkHeaders()),
+      );
+
+      await expect(
+        service.streamRawMessage({ message: 'Hi' }).next(),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
+  });
+
   describe('listModels', () => {
     it('maps the SDK payload to the public shape', async () => {
       mockList.mockResolvedValue({

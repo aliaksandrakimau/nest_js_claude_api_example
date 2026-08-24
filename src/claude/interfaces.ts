@@ -1,4 +1,7 @@
-import type { MessageParam } from '@anthropic-ai/sdk/resources/messages/messages';
+import type {
+  MessageParam,
+  RawMessageStreamEvent,
+} from '@anthropic-ai/sdk/resources/messages/messages';
 
 export type ClaudeRole = 'user' | 'assistant';
 
@@ -24,6 +27,17 @@ export type ClaudeStreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'message_stop'; stopReason: string | null; usage: ClaudeUsage }
   | { type: 'error'; message: string };
+
+// What the SDK returns for stream:true calls: an async iterable of raw
+// protocol events plus an AbortController to cancel the upstream request.
+export type UpstreamStream = AsyncIterable<RawMessageStreamEvent> & {
+  controller: AbortController;
+};
+
+// The unmodified Anthropic streaming protocol event. Unlike the normalized
+// ClaudeStreamEvent above, nothing is aggregated or dropped here — this is the
+// wire-level view served by /claude/raw-stream.
+export type ClaudeRawStreamEvent = RawMessageStreamEvent;
 
 export interface ClaudeModel {
   id: string;

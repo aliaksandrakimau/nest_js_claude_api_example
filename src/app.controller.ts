@@ -33,16 +33,44 @@ export class AppController {
     return this.claudeService.createConversation(request);
   }
 
-  // Streams the answer as server-sent events; each frame is one JSON payload
-  // with a `type` discriminator. SSE headers are set only after the service
-  // accepted the request, so validation and authentication failures still get
-  // regular HTTP error responses.
+  // Normalized stream: three aggregated event shapes, one JSON payload per
+  // `data:` frame. Easiest to consume; see /claude/raw-stream for fidelity.
   @Post('claude/stream')
   async streamCompletion(
     @Body() request: StreamRequestDto,
     @Res() res: ExpressResponse,
   ): Promise<void> {
-    const events = this.claudeService.streamMessage(request);
+    await this.writeSse(
+      res,
+      this.claudeService.streamMessage(request),
+      (event) => `data: ${JSON.stringify(event)}\n\n`,
+    );
+  }
+
+  // Raw pass-through: forwards the full Anthropic protocol unchanged. Each
+  // frame mirrors the upstream wire format exactly — an `event:` line naming
+  // the type plus the untouched JSON payload on a `data:` line.
+  @Post('claude/raw-stream')
+  async streamRawCompletion(
+    @Body() request: StreamRequestDto,
+    @Res() res: ExpressResponse,
+  ): Promise<void> {
+    await this.writeSse(
+      res,
+      this.claudeService.streamRawMessage(request),
+      (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+    );
+  }
+
+  // Shared SSE plumbing for both endpoints. Headers are sent lazily so
+  // validation and authentication failures still get regular HTTP error
+  // responses; a failure after that can no longer change the status line and
+  // is reported as a final `{type:"error"}` frame instead.
+  private async writeSse<T extends { type: string }>(
+    res: ExpressResponse,
+    events: AsyncIterable<T>,
+    formatFrame: (event: T | { type: 'error'; message: string }) => string,
+  ): Promise<void> {
     let opened = false;
 
     try {
@@ -68,7 +96,7 @@ export class AppController {
           break;
         }
 
-        res.write(`data: ${JSON.stringify(event)}\n\n`);
+        res.write(formatFrame(event));
       }
 
       res.end();
@@ -78,15 +106,13 @@ export class AppController {
         // a normal HTTP error with a meaningful status code.
         throw error;
       }
-      // Mid-stream failures can no longer change the status line, so report
-      // them as a final error frame instead.
       const message =
         error instanceof HttpException
           ? error.message
           : error instanceof Error
             ? error.message
             : 'Anthropic stream failed';
-      res.write(`data: ${JSON.stringify({ type: 'error', message })}\n\n`);
+      res.write(formatFrame({ type: 'error', message }));
       res.end();
     }
   }

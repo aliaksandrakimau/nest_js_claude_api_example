@@ -6,20 +6,18 @@ import { ClaudeService } from './claude/claude.service';
 import type { ClaudeStreamEvent } from './claude/interfaces';
 import { ConversationRequestDto } from './claude/dto';
 
-// Minimal async iterable standing in for the service's stream generator.
-function streamOf(
-  events: ClaudeStreamEvent[],
-): AsyncGenerator<ClaudeStreamEvent> {
+// Minimal async iterable standing in for the service's stream generators.
+function streamOf<T extends { type: string }>(events: T[]): AsyncGenerator<T> {
   let index = 0;
   const iterator = {
-    next: (): Promise<IteratorResult<ClaudeStreamEvent>> =>
+    next: (): Promise<IteratorResult<T>> =>
       index < events.length
         ? Promise.resolve({ done: false, value: events[index++] })
         : Promise.resolve({ done: true, value: undefined }),
   };
   return {
     [Symbol.asyncIterator]: () => iterator,
-  } as AsyncGenerator<ClaudeStreamEvent>;
+  } as AsyncGenerator<T>;
 }
 
 function streamThatThrows(error: Error): AsyncGenerator<never> {
@@ -47,6 +45,7 @@ describe('AppController', () => {
     sendMessage: jest.Mock;
     createConversation: jest.Mock;
     streamMessage: jest.Mock;
+    streamRawMessage: jest.Mock;
     listModels: jest.Mock;
   };
 
@@ -73,6 +72,7 @@ describe('AppController', () => {
       sendMessage: jest.fn().mockResolvedValue({}),
       createConversation: jest.fn().mockResolvedValue({}),
       streamMessage: jest.fn(),
+      streamRawMessage: jest.fn(),
       listModels: jest.fn().mockResolvedValue([]),
     };
 
@@ -157,6 +157,60 @@ describe('AppController', () => {
       ).rejects.toThrow('bad request');
 
       expect(res.flushHeaders).not.toHaveBeenCalled();
+      expect(res.write).not.toHaveBeenCalled();
+      expect(res.end).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('streamRawCompletion', () => {
+    // Wire-level events exactly as the Anthropic API emits them.
+    const RAW_EVENTS = [
+      {
+        type: 'message_start',
+        message: { id: 'msg_1', model: 'claude-haiku-4-5' },
+      },
+      { type: 'ping' },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'Hello' },
+      },
+    ];
+
+    it('writes every event with both an event and a data line', async () => {
+      claudeService.streamRawMessage.mockReturnValue(streamOf(RAW_EVENTS));
+      const res = createResponseMock();
+
+      await controller.streamRawCompletion(
+        { message: 'Hi' },
+        res as unknown as Response,
+      );
+
+      expect(claudeService.streamRawMessage).toHaveBeenCalledWith({
+        message: 'Hi',
+      });
+      // The frame format must mirror the upstream protocol verbatim.
+      expect(res.writes).toEqual(
+        RAW_EVENTS.map(
+          (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+        ),
+      );
+      expect(res.end).toHaveBeenCalled();
+    });
+
+    it('rethrows failures that happen before the first frame', async () => {
+      claudeService.streamRawMessage.mockReturnValue(
+        streamThatThrows(new HttpException('bad request', 400)),
+      );
+      const res = createResponseMock();
+
+      await expect(
+        controller.streamRawCompletion(
+          { message: 'Hi' },
+          res as unknown as Response,
+        ),
+      ).rejects.toThrow('bad request');
+
       expect(res.write).not.toHaveBeenCalled();
       expect(res.end).not.toHaveBeenCalled();
     });

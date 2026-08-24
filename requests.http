@@ -47,6 +47,15 @@ Content-Type: application/json
   ]
 }
 
+// Raw stream: forwards the unmodified Anthropic protocol. Each frame carries
+// an `event:` line with the type name plus the untouched JSON on `data:`.
+POST {{host}}/claude/raw-stream
+Content-Type: application/json
+
+{
+  "message": "Write a haiku about streams"
+}
+
 ### Validation check: temperature outside [0, 1] must return 400
 POST {{host}}/claude/message
 Content-Type: application/json

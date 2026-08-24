@@ -17,7 +17,7 @@ npm install
 npm run start:dev
 ```
 
-The app refuses to start without `ANTHROPIC_API_KEY`. Four endpoints are
+The app refuses to start without `ANTHROPIC_API_KEY`. Five endpoints are
 available.
 
 ### Single message
@@ -66,6 +66,50 @@ generated. If a failure occurs mid-stream, a final
 `{"type":"error","message":"..."}` frame is emitted; failures before the first
 frame produce a regular HTTP error response instead.
 
+### Raw streaming (unmodified Anthropic protocol)
+
+The normalized stream above trades fidelity for convenience. `POST
+/claude/raw-stream` accepts the same body but forwards the upstream protocol
+unchanged — every event type, in the exact wire format the Anthropic API uses:
+
+```bash
+curl -N -X POST http://localhost:3000/claude/raw-stream \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Write a haiku about streams"}'
+```
+
+Each frame carries an `event:` line naming the type plus the untouched JSON
+payload on a `data:` line:
+
+```text
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_...","model":"claude-haiku-4-5",...}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello "}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}
+
+event: message_stop
+data: {"type":"message_stop"}
+```
+
+The lifecycle: `message_start` opens the message and carries the initial usage
+counters; each content block runs `content_block_start` → one or more
+`content_block_delta` (delta types include `text_delta`, `input_json_delta`,
+`thinking_delta`) → `content_block_stop`; `message_delta` delivers the final
+stop reason and cumulative output tokens; `message_stop` closes the stream.
+`ping` keepalives may appear anywhere. New event and delta types are added to
+the protocol over time without version bumps, so consumers should ignore what
+they do not recognize.
+
 ### List models
 
 ```bash
@@ -83,9 +127,9 @@ other API error.
 
 ## Probing endpoints from IntelliJ IDEA
 
-`requests.http` contains ready-to-run requests for all four endpoints
-(including SSE streaming and a few invalid payloads that demonstrate `400`
-responses). Open it in IntelliJ IDEA, start the app with `npm run start:dev`,
+`requests.http` contains ready-to-run requests for all five endpoints
+(including both streaming variants and a few invalid payloads that demonstrate
+`400` responses). Open it in IntelliJ IDEA, start the app with `npm run start:dev`,
 pick an environment in the selector above the editor and click the run icon
 next to any request.
 
