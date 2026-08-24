@@ -57,6 +57,22 @@ function sdkHeaders(): Headers {
   return new Headers({ 'request-id': 'test' });
 }
 
+// Shape expected by the service from messages.create({stream: true}).
+function fakeSdkStream(events: unknown[]) {
+  let index = 0;
+  return {
+    controller: { abort: () => undefined },
+    [Symbol.asyncIterator]() {
+      return {
+        next: (): Promise<IteratorResult<unknown>> =>
+          index < events.length
+            ? Promise.resolve({ done: false, value: events[index++] })
+            : Promise.resolve({ done: true, value: undefined }),
+      };
+    },
+  };
+}
+
 describe('ClaudeService', () => {
   let service: ClaudeService;
   const originalKey = process.env.ANTHROPIC_API_KEY;
@@ -154,6 +170,114 @@ describe('ClaudeService', () => {
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({ messages }),
       );
+    });
+  });
+
+  describe('streamMessage', () => {
+    const SDK_STREAM = [
+      {
+        type: 'message_start',
+        message: {
+          id: 'msg_1',
+          model: 'claude-haiku-4-5',
+          usage: { input_tokens: 10 },
+        },
+      },
+      { type: 'content_block_start', content_block: { type: 'text' } },
+      {
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: 'Hel' },
+      },
+      // Non-text deltas must be skipped silently.
+      {
+        type: 'content_block_delta',
+        delta: { type: 'signature_delta', signature: 'sig' },
+      },
+      {
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: 'lo' },
+      },
+      { type: 'content_block_stop' },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: { output_tokens: 2 },
+      },
+      { type: 'message_stop' },
+    ];
+
+    it('normalizes raw SDK events and starts a streaming request', async () => {
+      mockCreate.mockResolvedValue(fakeSdkStream(SDK_STREAM));
+
+      const events = [];
+      for await (const event of service.streamMessage({ message: 'Hi' })) {
+        events.push(event);
+      }
+
+      expect(events).toEqual([
+        { type: 'message_start', id: 'msg_1', model: 'claude-haiku-4-5' },
+        { type: 'text_delta', text: 'Hel' },
+        { type: 'text_delta', text: 'lo' },
+        {
+          type: 'message_stop',
+          stopReason: 'end_turn',
+          usage: { inputTokens: 10, outputTokens: 2 },
+        },
+      ]);
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'claude-haiku-4-5',
+          max_tokens: 1000,
+          messages: [{ role: 'user', content: 'Hi' }],
+          stream: true,
+        }),
+      );
+    });
+
+    it('passes the conversation history through', async () => {
+      mockCreate.mockResolvedValue(fakeSdkStream(SDK_STREAM));
+
+      const messages = [{ role: 'user' as const, content: 'Hello?' }];
+      // Pull one event to trigger the upstream request.
+      await service.streamMessage({ messages }).next();
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ messages, stream: true }),
+      );
+    });
+
+    it('rejects message combined with messages', async () => {
+      await expect(
+        service
+          .streamMessage({
+            message: 'Hi',
+            messages: [{ role: 'user', content: 'Hi again' }],
+          })
+          .next(),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('aborts the upstream request when the consumer leaves early', async () => {
+      const stream = fakeSdkStream(SDK_STREAM);
+      const abortSpy = jest.spyOn(stream.controller, 'abort');
+      mockCreate.mockResolvedValue(stream);
+
+      for await (const event of service.streamMessage({ message: 'Hi' })) {
+        expect(event.type).toBe('message_start');
+        break;
+      }
+
+      expect(abortSpy).toHaveBeenCalled();
+    });
+
+    it('maps SDK failures raised before the first event', async () => {
+      mockCreate.mockRejectedValue(
+        new AuthenticationError(401, {}, 'invalid x-api-key', sdkHeaders()),
+      );
+
+      await expect(
+        service.streamMessage({ message: 'Hi' }).next(),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
     });
   });
 

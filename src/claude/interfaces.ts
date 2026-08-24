@@ -16,6 +16,15 @@ export interface ClaudeResponse {
   usage: ClaudeUsage;
 }
 
+// Events sent over the /claude/stream SSE endpoint. Each event is written as
+// one `data: <json>` frame; the consumer concatenates the `text` of successive
+// text_delta frames to assemble the full answer.
+export type ClaudeStreamEvent =
+  | { type: 'message_start'; id: string; model: string }
+  | { type: 'text_delta'; text: string }
+  | { type: 'message_stop'; stopReason: string | null; usage: ClaudeUsage }
+  | { type: 'error'; message: string };
+
 export interface ClaudeModel {
   id: string;
   displayName: string;

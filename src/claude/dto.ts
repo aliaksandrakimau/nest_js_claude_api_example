@@ -10,6 +10,7 @@ import {
   Matches,
   Max,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 
@@ -59,4 +60,21 @@ export class ConversationRequestDto extends ClaudeRequestOptionsDto {
   @ValidateNested({ each: true })
   @Type(() => ConversationMessageDto)
   messages!: ConversationMessageDto[];
+}
+
+export class StreamRequestDto extends ClaudeRequestOptionsDto {
+  // The stream endpoint accepts either a single message or a full history.
+  // Each field is required only while the other one is absent; providing both
+  // passes per-field validation and is rejected by the service with a clear
+  // error, because class-validator has no built-in cross-field XOR rule.
+  @ValidateIf((o: StreamRequestDto) => o.messages === undefined)
+  @IsString()
+  @Matches(/\S/)
+  message?: string;
+
+  @ValidateIf((o: StreamRequestDto) => o.message === undefined)
+  @ArrayNotEmpty()
+  @ValidateNested({ each: true })
+  @Type(() => ConversationMessageDto)
+  messages?: ConversationMessageDto[];
 }

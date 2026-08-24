@@ -34,7 +34,7 @@ export ANTHROPIC_API_KEY="your_api_key"
 npm run start:dev
 ```
 
-The app refuses to start without `ANTHROPIC_API_KEY`. Three endpoints are available:
+The app refuses to start without `ANTHROPIC_API_KEY`. Four endpoints are available:
 
 ### Single message
 
@@ -57,6 +57,30 @@ curl -X POST http://localhost:3000/claude/conversation \
     {"role":"user","content":"Show a short example."}
   ]}'
 ```
+
+### Streaming answer (SSE)
+
+```bash
+curl -N -X POST http://localhost:3000/claude/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Write a haiku about streams"}'
+```
+
+The body is the same as for the conversation endpoint, but either a single
+`message` or a full `messages` history may be supplied (not both). The reply is
+`text/event-stream`; every frame is one JSON payload on a `data:` line:
+
+```text
+data: {"type":"message_start","id":"msg_...","model":"claude-haiku-4-5"}
+data: {"type":"text_delta","text":"Hello "}
+data: {"type":"text_delta","text":"world"}
+data: {"type":"message_stop","stopReason":"end_turn","usage":{"inputTokens":10,"outputTokens":2}}
+```
+
+Concatenate successive `text_delta` payloads to assemble the answer as it is
+generated. If a failure occurs mid-stream, a final
+`{"type":"error","message":"..."}` frame is emitted; failures before the first
+frame produce a regular HTTP error response instead.
 
 ### List models
 

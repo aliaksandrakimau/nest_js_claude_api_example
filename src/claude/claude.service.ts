@@ -1,11 +1,3 @@
-import {
-  BadRequestException,
-  HttpException,
-  HttpStatus,
-  Injectable,
-  OnModuleInit,
-  ServiceUnavailableException,
-} from '@nestjs/common';
 import Anthropic, {
   APIConnectionError,
   APIError,
@@ -16,8 +8,26 @@ import Anthropic, {
   RateLimitError,
   UnprocessableEntityError,
 } from '@anthropic-ai/sdk';
-import { ConversationRequestDto, SendMessageRequestDto } from './dto';
-import { ClaudeApiMessage, ClaudeModel, ClaudeResponse } from './interfaces';
+import type { RawMessageStreamEvent } from '@anthropic-ai/sdk/resources/messages/messages';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  OnModuleInit,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import {
+  ConversationRequestDto,
+  SendMessageRequestDto,
+  StreamRequestDto,
+} from './dto';
+import {
+  ClaudeApiMessage,
+  ClaudeModel,
+  ClaudeResponse,
+  ClaudeStreamEvent,
+} from './interfaces';
 
 const DEFAULT_MODEL = 'claude-haiku-4-5';
 const DEFAULT_MAX_TOKENS = 1000;
@@ -47,6 +57,75 @@ export class ClaudeService implements OnModuleInit {
       ...this.options(request),
       messages: request.messages,
     });
+  }
+
+  // Streams the answer as normalized events. The SDK request is only started
+  // when the consumer pulls the first event, so validation errors surface
+  // before any byte is written to the HTTP response.
+  async *streamMessage(
+    request: StreamRequestDto,
+  ): AsyncGenerator<ClaudeStreamEvent> {
+    if (request.message !== undefined && request.messages !== undefined) {
+      throw new BadRequestException(
+        'Provide either "message" or "messages", not both',
+      );
+    }
+
+    const messages: ClaudeApiMessage[] = request.messages ?? [
+      { role: 'user', content: request.message ?? '' },
+    ];
+
+    let stream: AsyncIterable<RawMessageStreamEvent> & {
+      controller: AbortController;
+    };
+    try {
+      stream = await this.getClient().messages.create({
+        ...this.options(request),
+        messages,
+        stream: true,
+      });
+    } catch (error) {
+      this.mapSdkError(error);
+    }
+
+    try {
+      let stopReason: string | null = null;
+      let inputTokens = 0;
+      let outputTokens = 0;
+
+      for await (const event of stream) {
+        switch (event.type) {
+          case 'message_start':
+            inputTokens = event.message.usage.input_tokens;
+            yield {
+              type: 'message_start',
+              id: event.message.id,
+              model: event.message.model,
+            };
+            break;
+          case 'content_block_delta':
+            if (event.delta.type === 'text_delta') {
+              yield { type: 'text_delta', text: event.delta.text };
+            }
+            break;
+          case 'message_delta':
+            stopReason = event.delta.stop_reason;
+            outputTokens = event.usage.output_tokens;
+            break;
+          case 'message_stop':
+            yield {
+              type: 'message_stop',
+              stopReason,
+              usage: { inputTokens, outputTokens },
+            };
+            break;
+        }
+      }
+    } finally {
+      // Stop the upstream request even when the client disconnects mid-stream:
+      // breaking out of the loop runs this block through generator return().
+      stream.controller.abort();
+    }
   }
 
   async listModels(): Promise<ClaudeModel[]> {
@@ -94,7 +173,9 @@ export class ClaudeService implements OnModuleInit {
     }
   }
 
-  private options(request: ConversationRequestDto | SendMessageRequestDto): {
+  private options(
+    request: ConversationRequestDto | SendMessageRequestDto | StreamRequestDto,
+  ): {
     model: string;
     max_tokens: number;
     system?: string;

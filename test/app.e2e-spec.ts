@@ -7,6 +7,29 @@ import { AppModule } from './../src/app.module';
 const mockCreate = jest.fn<(...args: unknown[]) => Promise<unknown>>();
 const mockList = jest.fn<() => Promise<unknown>>();
 
+// Shape expected by the service from messages.create({stream: true}).
+function fakeSdkStream(events: unknown[]) {
+  let index = 0;
+  return {
+    controller: { abort: () => undefined },
+    [Symbol.asyncIterator]() {
+      return {
+        next: (): Promise<IteratorResult<unknown>> =>
+          index < events.length
+            ? Promise.resolve({ done: false, value: events[index++] })
+            : Promise.resolve({ done: true, value: undefined }),
+      };
+    },
+  };
+}
+
+function parseSseFrames(text: string): unknown[] {
+  return text
+    .split('\n\n')
+    .filter((frame) => frame.length > 0)
+    .map((frame): unknown => JSON.parse(frame.replace(/^data: /, '')));
+}
+
 jest.mock('@anthropic-ai/sdk', () => {
   const actual =
     jest.requireActual<typeof import('@anthropic-ai/sdk')>('@anthropic-ai/sdk');
@@ -88,6 +111,73 @@ describe('Claude endpoints (e2e)', () => {
         const body = res.body as { message?: unknown };
         expect(JSON.stringify(body.message)).toContain('role');
       });
+  });
+
+  it('POST /claude/stream emits the answer as SSE frames', () => {
+    mockCreate.mockResolvedValue(
+      fakeSdkStream([
+        {
+          type: 'message_start',
+          message: {
+            id: 'msg_1',
+            model: 'claude-haiku-4-5',
+            usage: { input_tokens: 10 },
+          },
+        },
+        {
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'Hel' },
+        },
+        {
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'lo' },
+        },
+        {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: { output_tokens: 2 },
+        },
+        { type: 'message_stop' },
+      ]),
+    );
+
+    return request(app.getHttpServer())
+      .post('/claude/stream')
+      .send({ message: 'Hi' })
+      .expect(200)
+      .expect('Content-Type', /text\/event-stream/)
+      .expect((res) => {
+        expect(parseSseFrames(res.text)).toEqual([
+          { type: 'message_start', id: 'msg_1', model: 'claude-haiku-4-5' },
+          { type: 'text_delta', text: 'Hel' },
+          { type: 'text_delta', text: 'lo' },
+          {
+            type: 'message_stop',
+            stopReason: 'end_turn',
+            usage: { inputTokens: 10, outputTokens: 2 },
+          },
+        ]);
+        expect(mockCreate).toHaveBeenCalledWith(
+          expect.objectContaining({ stream: true, max_tokens: 1000 }),
+        );
+      });
+  });
+
+  it('POST /claude/stream rejects message combined with messages', () => {
+    return request(app.getHttpServer())
+      .post('/claude/stream')
+      .send({
+        message: 'Hi',
+        messages: [{ role: 'user', content: 'Hi again' }],
+      })
+      .expect(400);
+  });
+
+  it('POST /claude/stream rejects a body without message or messages', () => {
+    return request(app.getHttpServer())
+      .post('/claude/stream')
+      .send({ model: 'claude-haiku-4-5' })
+      .expect(400);
   });
 
   it('GET /claude/models returns mapped models', () => {
