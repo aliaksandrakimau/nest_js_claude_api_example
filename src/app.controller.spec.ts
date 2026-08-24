@@ -1,23 +1,49 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AppController } from './app.controller';
-import { AppService } from './app.service';
 import { ClaudeService } from './claude/claude.service';
 
 describe('AppController', () => {
-  let appController: AppController;
+  let controller: AppController;
+  let claudeService: {
+    sendMessage: jest.Mock;
+    createConversation: jest.Mock;
+    listModels: jest.Mock;
+  };
 
   beforeEach(async () => {
-    const app: TestingModule = await Test.createTestingModule({
+    claudeService = {
+      sendMessage: jest.fn().mockResolvedValue({}),
+      createConversation: jest.fn().mockResolvedValue({}),
+      listModels: jest.fn().mockResolvedValue([]),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
       controllers: [AppController],
-      providers: [AppService, ClaudeService],
+      providers: [{ provide: ClaudeService, useValue: claudeService }],
     }).compile();
 
-    appController = app.get<AppController>(AppController);
+    controller = module.get<AppController>(AppController);
   });
 
-  describe('root', () => {
-    it('should return "Hello World!"', () => {
-      expect(appController.getHello()).toBe('Hello World!');
-    });
+  it('sendMessage delegates to ClaudeService', async () => {
+    const request = { message: 'Hi' };
+
+    await controller.sendMessage(request);
+
+    expect(claudeService.sendMessage).toHaveBeenCalledWith(request);
+  });
+
+  it('createConversation delegates to ClaudeService', async () => {
+    const request = { messages: [{ role: 'user', content: 'Hi' }] };
+
+    await controller.createConversation(request);
+
+    expect(claudeService.createConversation).toHaveBeenCalledWith(request);
+  });
+
+  it('listModels delegates to ClaudeService', async () => {
+    await controller.listModels();
+
+    expect(claudeService.listModels).toHaveBeenCalled();
   });
 });

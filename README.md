@@ -27,44 +27,51 @@
 
 ## Claude API
 
-Перед запуском задайте ключ в окружении:
+Set the key in the environment before starting the app:
 
 ```bash
-export ANTHROPIC_API_KEY="ваш_api_key"
+export ANTHROPIC_API_KEY="your_api_key"
 npm run start:dev
 ```
 
-Доступны три endpoint-а:
+The app refuses to start without `ANTHROPIC_API_KEY`. Three endpoints are available:
 
-### Одно сообщение
+### Single message
 
 ```bash
 curl -X POST http://localhost:3000/claude/message \
   -H 'Content-Type: application/json' \
-  -d '{"message":"Объясни, что такое NestJS, в двух предложениях"}'
+  -d '{"message":"Explain what NestJS is in two sentences"}'
 ```
 
-Также можно передать `model`, `maxTokens`, `system` и `temperature`.
+You can also pass `model`, `maxTokens`, `system` and `temperature`.
 
-### Диалог с историей
+### Conversation with history
 
 ```bash
 curl -X POST http://localhost:3000/claude/conversation \
   -H 'Content-Type: application/json' \
   -d '{"messages":[
-    {"role":"user","content":"Что такое dependency injection?"},
-    {"role":"assistant","content":"Это способ передавать зависимости извне."},
-    {"role":"user","content":"Покажи короткий пример."}
+    {"role":"user","content":"What is dependency injection?"},
+    {"role":"assistant","content":"A way to pass dependencies from outside."},
+    {"role":"user","content":"Show a short example."}
   ]}'
 ```
 
-### Список моделей
+### List models
 
 ```bash
 curl http://localhost:3000/claude/models
 ```
 
-Ответ сообщения содержит `text`, модель, причину остановки и статистику токенов.
+The message response contains `text`, the model, the stop reason and token usage.
+
+Request bodies are validated: empty strings, unknown fields and wrong types
+(for example, `temperature` outside the 0–1 range) are rejected with `400`.
+Anthropic API failures are surfaced as meaningful HTTP codes: `429` on rate
+limits, `503` when the configured key or connection is broken, `400` for
+requests the API considers invalid (e.g. an unknown model) and `502` for any
+other API error.
 
 ## Project setup
 

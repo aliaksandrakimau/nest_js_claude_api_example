@@ -1,28 +1,39 @@
 import {
   BadRequestException,
+  HttpException,
+  HttpStatus,
   Injectable,
+  OnModuleInit,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import Anthropic from '@anthropic-ai/sdk';
-import {
-  ClaudeApiMessage,
-  ClaudeModel,
-  ClaudeRequestOptions,
-  ClaudeResponse,
-  ConversationRequest,
-  SendMessageRequest,
-} from './interfaces';
+import Anthropic, {
+  APIConnectionError,
+  APIError,
+  AuthenticationError,
+  BadRequestError,
+  NotFoundError,
+  PermissionDeniedError,
+  RateLimitError,
+  UnprocessableEntityError,
+} from '@anthropic-ai/sdk';
+import { ConversationRequestDto, SendMessageRequestDto } from './dto';
+import { ClaudeApiMessage, ClaudeModel, ClaudeResponse } from './interfaces';
 
 const DEFAULT_MODEL = 'claude-haiku-4-5';
 const DEFAULT_MAX_TOKENS = 1000;
 
 @Injectable()
-export class ClaudeService {
+export class ClaudeService implements OnModuleInit {
   private client?: Anthropic;
 
-  async sendMessage(request: SendMessageRequest): Promise<ClaudeResponse> {
-    this.validateMessage(request.message);
+  // Fail fast at bootstrap instead of failing on the first request.
+  onModuleInit(): void {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      throw new Error('ANTHROPIC_API_KEY environment variable must be set');
+    }
+  }
 
+  async sendMessage(request: SendMessageRequestDto): Promise<ClaudeResponse> {
     return this.createMessage({
       ...this.options(request),
       messages: [{ role: 'user', content: request.message }],
@@ -30,18 +41,8 @@ export class ClaudeService {
   }
 
   async createConversation(
-    request: ConversationRequest,
+    request: ConversationRequestDto,
   ): Promise<ClaudeResponse> {
-    if (!Array.isArray(request.messages) || request.messages.length === 0) {
-      throw new BadRequestException(
-        'messages must contain at least one message',
-      );
-    }
-
-    request.messages.forEach((message) =>
-      this.validateMessage(message.content),
-    );
-
     return this.createMessage({
       ...this.options(request),
       messages: request.messages,
@@ -49,14 +50,17 @@ export class ClaudeService {
   }
 
   async listModels(): Promise<ClaudeModel[]> {
-    this.ensureApiKey();
-    const response = await this.getClient().models.list();
+    try {
+      const response = await this.getClient().models.list();
 
-    return response.data.map((model) => ({
-      id: model.id,
-      displayName: model.display_name,
-      createdAt: model.created_at,
-    }));
+      return response.data.map((model) => ({
+        id: model.id,
+        displayName: model.display_name,
+        createdAt: model.created_at,
+      }));
+    } catch (error) {
+      this.mapSdkError(error);
+    }
   }
 
   private async createMessage(params: {
@@ -66,28 +70,36 @@ export class ClaudeService {
     system?: string;
     temperature?: number;
   }): Promise<ClaudeResponse> {
-    this.ensureApiKey();
+    try {
+      const response = await this.getClient().messages.create(params);
 
-    const response = await this.getClient().messages.create(params);
-    const text = response.content
-      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-      .map((block) => block.text)
-      .join('');
+      const text = response.content
+        .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+        .map((block) => block.text)
+        .join('');
 
-    return {
-      id: response.id,
-      model: response.model,
-      role: response.role,
-      text,
-      stopReason: response.stop_reason,
-      usage: {
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
-      },
-    };
+      return {
+        id: response.id,
+        model: response.model,
+        role: response.role,
+        text,
+        stopReason: response.stop_reason,
+        usage: {
+          inputTokens: response.usage.input_tokens,
+          outputTokens: response.usage.output_tokens,
+        },
+      };
+    } catch (error) {
+      this.mapSdkError(error);
+    }
   }
 
-  private options(request: ClaudeRequestOptions) {
+  private options(request: ConversationRequestDto | SendMessageRequestDto): {
+    model: string;
+    max_tokens: number;
+    system?: string;
+    temperature?: number;
+  } {
     return {
       model: request.model ?? DEFAULT_MODEL,
       max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
@@ -98,18 +110,46 @@ export class ClaudeService {
     };
   }
 
-  private validateMessage(message: string): void {
-    if (typeof message !== 'string' || message.trim().length === 0) {
-      throw new BadRequestException('message content must not be empty');
-    }
-  }
-
-  private ensureApiKey(): void {
-    if (!process.env.ANTHROPIC_API_KEY) {
+  // Translate SDK failures into meaningful HTTP responses instead of leaking
+  // raw 500s. Authentication problems are ours (the configured key), not the
+  // caller's, so they surface as 503; caller mistakes like an unknown model
+  // surface as 400; anything else from the API becomes 502.
+  private mapSdkError(error: unknown): never {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof PermissionDeniedError
+    ) {
       throw new ServiceUnavailableException(
-        'ANTHROPIC_API_KEY is not configured',
+        'Anthropic API rejected ANTHROPIC_API_KEY',
       );
     }
+
+    if (error instanceof RateLimitError) {
+      throw new HttpException(
+        'Anthropic rate limit exceeded, retry later',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    if (
+      error instanceof BadRequestError ||
+      error instanceof NotFoundError ||
+      error instanceof UnprocessableEntityError
+    ) {
+      throw new BadRequestException(error.message);
+    }
+
+    if (error instanceof APIConnectionError) {
+      throw new ServiceUnavailableException(
+        'Could not reach the Anthropic API',
+      );
+    }
+
+    if (error instanceof APIError) {
+      throw new HttpException(error.message, HttpStatus.BAD_GATEWAY);
+    }
+
+    throw error;
   }
 
   private getClient(): Anthropic {

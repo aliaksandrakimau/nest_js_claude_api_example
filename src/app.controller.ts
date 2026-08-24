@@ -1,24 +1,20 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
 import { ClaudeService } from './claude/claude.service';
-import type {
-  ClaudeModel,
-  ClaudeResponse,
-  ConversationRequest,
-  SendMessageRequest,
-} from './claude/interfaces';
+import { ConversationRequestDto, SendMessageRequestDto } from './claude/dto';
+import type { ClaudeModel, ClaudeResponse } from './claude/interfaces';
 
 @Controller()
 export class AppController {
   constructor(private readonly claudeService: ClaudeService) {}
 
   @Post('claude/message')
-  sendMessage(@Body() request: SendMessageRequest): Promise<ClaudeResponse> {
+  sendMessage(@Body() request: SendMessageRequestDto): Promise<ClaudeResponse> {
     return this.claudeService.sendMessage(request);
   }
 
   @Post('claude/conversation')
   createConversation(
-    @Body() request: ConversationRequest,
+    @Body() request: ConversationRequestDto,
   ): Promise<ClaudeResponse> {
     return this.claudeService.createConversation(request);
   }
