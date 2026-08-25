@@ -21,6 +21,7 @@ import {
   OnModuleInit,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { PinoLogger } from 'nestjs-pino';
 import {
   ChatRequestDto,
   ConversationRequestDto,
@@ -47,7 +48,12 @@ const MAX_TOOL_ROUNDS = 10;
 export class ClaudeService implements OnModuleInit {
   private client?: Anthropic;
 
-  constructor(private readonly toolRegistry: ToolRegistryService) {}
+  constructor(
+    private readonly toolRegistry: ToolRegistryService,
+    private readonly logger: PinoLogger,
+  ) {
+    this.logger.setContext('ClaudeService');
+  }
 
   // Fail fast at bootstrap instead of failing on the first request.
   onModuleInit(): void {
@@ -209,6 +215,7 @@ export class ClaudeService implements OnModuleInit {
     let totalOutputTokens = 0;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      this.logger.debug({ round }, 'tool orchestration round starting');
       let upstream: UpstreamStream;
       try {
         upstream = await this.getClient().messages.create({
@@ -334,6 +341,17 @@ export class ClaudeService implements OnModuleInit {
         }
 
         if (stopReason !== 'tool_use' || pendingToolCalls.length === 0) {
+          this.logger.info(
+            {
+              rounds: round + 1,
+              stopReason,
+              usage: {
+                inputTokens: totalInputTokens,
+                outputTokens: totalOutputTokens,
+              },
+            },
+            'claude chat completed',
+          );
           yield {
             type: 'message_stop',
             stopReason,
@@ -374,6 +392,10 @@ export class ClaudeService implements OnModuleInit {
       }
     }
 
+    this.logger.warn(
+      { maxRounds: MAX_TOOL_ROUNDS },
+      'tool orchestration exceeded the round limit',
+    );
     throw new HttpException(
       ['Tool orchestration exceeded', MAX_TOOL_ROUNDS, 'rounds'].join(' '),
       HttpStatus.BAD_GATEWAY,
@@ -454,7 +476,7 @@ export class ClaudeService implements OnModuleInit {
         .map((block) => block.text)
         .join('');
 
-      return {
+      const result = {
         id: response.id,
         model: response.model,
         role: response.role,
@@ -465,6 +487,15 @@ export class ClaudeService implements OnModuleInit {
           outputTokens: response.usage.output_tokens,
         },
       };
+      this.logger.info(
+        {
+          model: result.model,
+          stopReason: result.stopReason,
+          usage: result.usage,
+        },
+        'claude message completed',
+      );
+      return result;
     } catch (error) {
       this.mapSdkError(error);
     }
@@ -497,12 +528,17 @@ export class ClaudeService implements OnModuleInit {
       error instanceof AuthenticationError ||
       error instanceof PermissionDeniedError
     ) {
+      this.logger.error(
+        { sdkError: error.message },
+        'Anthropic API rejected the configured key',
+      );
       throw new ServiceUnavailableException(
         'Anthropic API rejected ANTHROPIC_API_KEY',
       );
     }
 
     if (error instanceof RateLimitError) {
+      this.logger.warn({ sdkError: error.message }, 'Anthropic rate limit hit');
       throw new HttpException(
         'Anthropic rate limit exceeded, retry later',
         HttpStatus.TOO_MANY_REQUESTS,

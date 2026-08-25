@@ -110,6 +110,22 @@ stop reason and cumulative output tokens; `message_stop` closes the stream.
 the protocol over time without version bumps, so consumers should ignore what
 they do not recognize.
 
+### Agent chat with automatic tool calls
+
+`POST /claude/chat` accepts the same body as `/claude/stream` but runs the
+full tool-calling loop: when the model requests a registered tool, the server
+dispatches it against the `ToolRegistryService`, feeds the result back and
+continues until the model produces a final answer. Tools are registered via
+`ToolsModule.forRoot([...])` (the example app ships a safe `calculator`);
+each orchestration round emits its own `message_start`, and the terminal
+`message_stop` carries usage summed across all rounds:
+
+```bash
+curl -N -X POST http://localhost:3000/claude/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"What is 2+2? Use the calculator."}'
+```
+
 ### List models
 
 ```bash
@@ -125,9 +141,18 @@ limits, `503` when the configured key or connection is broken, `400` for
 requests the API considers invalid (e.g. an unknown model) and `502` for any
 other API error.
 
+## Logging
+
+All logs are structured JSON via [nestjs-pino](https://github.com/iamolegga/nestjs-pino):
+every HTTP request gets an access log with a request id, and application events
+(completed messages with token usage, rate-limit hits, tool orchestration rounds)
+carry the same fields. In development (`NODE_ENV` neither `production` nor
+`test`) output is pretty-printed; production emits raw NDJSON ready for log
+shippers. Tune verbosity with the usual pino levels if needed.
+
 ## Probing endpoints from IntelliJ IDEA
 
-`requests.http` contains ready-to-run requests for all five endpoints
+`requests.http` contains ready-to-run requests for the Claude endpoints
 (including both streaming variants and a few invalid payloads that demonstrate
 `400` responses). Open it in IntelliJ IDEA, start the app with `npm run start:dev`,
 pick an environment in the selector above the editor and click the run icon

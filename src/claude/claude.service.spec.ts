@@ -16,6 +16,7 @@ import {
 } from '@anthropic-ai/sdk';
 import { ClaudeService } from './claude.service';
 import { ToolRegistryService } from './tools/tool-registry.service';
+import { PinoLogger } from 'nestjs-pino';
 
 const mockCreate = jest.fn<(...args: unknown[]) => Promise<unknown>>();
 const mockList = jest.fn<() => Promise<unknown>>();
@@ -104,6 +105,18 @@ describe('ClaudeService', () => {
       providers: [
         ClaudeService,
         { provide: ToolRegistryService, useValue: toolRegistry },
+        // Silent logger stub: keeps test output clean and lets assertions
+        // inspect log calls if ever needed.
+        {
+          provide: PinoLogger,
+          useValue: Object.assign(jest.fn(), {
+            setContext: jest.fn(),
+            info: jest.fn(),
+            warn: jest.fn(),
+            error: jest.fn(),
+            debug: jest.fn(),
+          }),
+        },
       ],
     }).compile();
 

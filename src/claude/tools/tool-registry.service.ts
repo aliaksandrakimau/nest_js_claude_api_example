@@ -45,7 +45,7 @@ export class ToolRegistryService {
     if (handler === undefined) {
       throw new BadRequestException('Unknown tool requested');
     }
-    this.log.debug(['Invoking tool:', requestedId].join(' '));
+    this.log.debug({ tool: requestedId }, 'dispatching tool call');
     return handler.run(input);
   }
 
