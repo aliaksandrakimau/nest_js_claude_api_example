@@ -397,4 +397,11 @@ describe('Claude endpoints (e2e)', () => {
         ]);
       });
   });
+
+  it('GET /health reports liveness', () => {
+    return request(app.getHttpServer())
+      .get('/health')
+      .expect(200)
+      .expect({ status: 'ok' });
+  });
 });

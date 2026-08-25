@@ -17,6 +17,7 @@ import {
 import { ClaudeService } from './claude.service';
 import { ToolRegistryService } from './tools/tool-registry.service';
 import { PinoLogger } from 'nestjs-pino';
+import { ConfigService } from '@nestjs/config';
 
 const mockCreate = jest.fn<(...args: unknown[]) => Promise<unknown>>();
 const mockList = jest.fn<() => Promise<unknown>>();
@@ -116,6 +117,12 @@ describe('ClaudeService', () => {
             error: jest.fn(),
             debug: jest.fn(),
           }),
+        },
+        // Reads straight from process.env, matching how the tests drive the
+        // ANTHROPIC_API_KEY lifecycle.
+        {
+          provide: ConfigService,
+          useValue: { get: (key: string) => process.env[key] },
         },
       ],
     }).compile();

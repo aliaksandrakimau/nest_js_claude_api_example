@@ -1,9 +1,11 @@
 import { Module, ValidationPipe } from '@nestjs/common';
 import { APP_PIPE } from '@nestjs/core';
+import { ConfigModule } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
 import { ClaudeModule } from './claude/claude.module';
 import { ToolsModule } from './claude/tools/tools.module';
 import { CalculatorTool } from './claude/tools/example-tool';
+import { HealthController } from './health.controller';
 
 // Pretty console output only for local development; production emits raw
 // NDJSON (what log shippers expect) and tests stay silent.
@@ -12,6 +14,9 @@ const isDev =
 
 @Module({
   imports: [
+    // Global so every module can inject ConfigService; loads a local .env
+    // when present (see .env.example for the expected variables).
+    ConfigModule.forRoot({ isGlobal: true }),
     LoggerModule.forRoot({
       pinoHttp: {
         level: process.env.NODE_ENV === 'test' ? 'silent' : 'info',
@@ -28,6 +33,7 @@ const isDev =
     ClaudeModule,
     ToolsModule.forRoot([CalculatorTool]),
   ],
+  controllers: [HealthController],
   providers: [
     {
       // Registered as a provider so e2e tests get the same validation setup.

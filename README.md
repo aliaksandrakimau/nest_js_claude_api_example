@@ -8,17 +8,20 @@ meant to grow with more integration use cases over time.
 
 ## Setup
 
-Set the key in the environment before starting the app — it is never read
-from a file or committed to the repository:
+Configuration is managed with `@nestjs/config`. Either export the variables
+in your shell or copy `.env.example` to `.env` and fill in the values —
+`.env` files are gitignored and never committed:
 
 ```bash
+cp .env.example .env   # then edit .env, or just export the key directly:
 export ANTHROPIC_API_KEY="your_api_key"
 npm install
 npm run start:dev
 ```
 
-The app refuses to start without `ANTHROPIC_API_KEY`. Five endpoints are
-available.
+The app refuses to start without `ANTHROPIC_API_KEY`. CORS is enabled for all
+origins by default. `GET /health` reports liveness for orchestrators and load
+balancers.
 
 ### Single message
 

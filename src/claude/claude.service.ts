@@ -22,6 +22,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
+import { ConfigService } from '@nestjs/config';
 import {
   ChatRequestDto,
   ConversationRequestDto,
@@ -51,13 +52,14 @@ export class ClaudeService implements OnModuleInit {
   constructor(
     private readonly toolRegistry: ToolRegistryService,
     private readonly logger: PinoLogger,
+    private readonly config: ConfigService,
   ) {
     this.logger.setContext('ClaudeService');
   }
 
   // Fail fast at bootstrap instead of failing on the first request.
   onModuleInit(): void {
-    if (!process.env.ANTHROPIC_API_KEY) {
+    if (!this.config.get<string>('ANTHROPIC_API_KEY')) {
       throw new Error('ANTHROPIC_API_KEY environment variable must be set');
     }
   }
