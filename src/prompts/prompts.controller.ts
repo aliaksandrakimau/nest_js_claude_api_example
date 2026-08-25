@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Put } from '@nestjs/common';
-import { PromptStoreService, StoredPrompt } from './prompt-store.service';
+import { PromptStoreService } from './prompt-store.service';
+import type { StoredPrompt } from './prompt-store.service';
 import { PromptUpsertDto } from './dto';
 
 @Controller('claude/prompts')

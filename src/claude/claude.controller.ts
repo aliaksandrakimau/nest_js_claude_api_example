@@ -154,7 +154,7 @@ export class ClaudeController {
         type: 'error',
         message:
           error instanceof Error ? error.message : 'Anthropic stream failed',
-      } as T);
+      } as unknown as T);
     }
     return { events: collected };
   }
