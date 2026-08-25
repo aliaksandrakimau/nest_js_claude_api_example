@@ -1,10 +1,17 @@
 import { HttpException } from '@nestjs/common';
 import type { Response } from 'express';
 import { Test, TestingModule } from '@nestjs/testing';
+import { PinoLogger } from 'nestjs-pino';
 import { ClaudeController } from './claude.controller';
 import { ClaudeService } from './claude.service';
 import type { ClaudeStreamEvent } from './interfaces';
 import { ConversationRequestDto } from './dto';
+
+// Typed view of a recorded global.fetch call in webhook tests.
+function firstFetchCall(): [string, { body: string }] {
+  const calls = (global.fetch as jest.Mock).mock.calls as unknown[][];
+  return calls[0] as [string, { body: string }];
+}
 
 // Minimal async iterable standing in for the service's stream generators.
 function streamOf<T extends { type: string }>(events: T[]): AsyncGenerator<T> {
@@ -36,6 +43,7 @@ interface SseResponseMock {
   write: jest.Mock;
   end: jest.Mock;
   on: jest.Mock;
+  json: jest.Mock;
   writes: string[];
 }
 
@@ -49,8 +57,8 @@ describe('ClaudeController', () => {
     listModels: jest.Mock;
   };
 
-  // Covers everything the SSE handler touches; kept as a plain jest.Mock
-  // interface so assertions never touch Express class methods.
+  // Covers everything the SSE and webhook handlers touch; kept as a plain
+  // jest.Mock interface so assertions never touch Express class methods.
   const createResponseMock = (): SseResponseMock => {
     const response: SseResponseMock = {
       status: jest.fn().mockReturnThis(),
@@ -62,10 +70,20 @@ describe('ClaudeController', () => {
       }),
       end: jest.fn(),
       on: jest.fn(),
+      json: jest.fn().mockReturnThis(),
       writes: [],
     };
     return response;
   };
+
+  // Silent logger stub for the webhook delivery path.
+  const loggerStub = Object.assign(jest.fn(), {
+    setContext: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+  });
 
   beforeEach(async () => {
     claudeService = {
@@ -75,13 +93,23 @@ describe('ClaudeController', () => {
       streamRawMessage: jest.fn(),
       listModels: jest.fn().mockResolvedValue([]),
     };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 200 }));
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ClaudeController],
-      providers: [{ provide: ClaudeService, useValue: claudeService }],
+      providers: [
+        { provide: ClaudeService, useValue: claudeService },
+        { provide: PinoLogger, useValue: loggerStub },
+      ],
     }).compile();
 
     controller = module.get<ClaudeController>(ClaudeController);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it('sendMessage delegates to ClaudeService', async () => {
@@ -213,6 +241,101 @@ describe('ClaudeController', () => {
 
       expect(res.write).not.toHaveBeenCalled();
       expect(res.end).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('webhook mode', () => {
+    const EVENTS: ClaudeStreamEvent[] = [
+      { type: 'message_start', id: 'msg_1', model: 'claude-haiku-4-5' },
+      { type: 'text_delta', text: 'Hi' },
+    ];
+
+    it('acknowledges with 202 and delivers collected events to the callback', async () => {
+      claudeService.streamMessage.mockReturnValue(streamOf(EVENTS));
+      const res = createResponseMock();
+
+      await controller.streamCompletion(
+        {
+          message: 'Hi',
+          callbackUrl: 'http://receiver.local/hook',
+        },
+        res as unknown as Response,
+      );
+
+      expect(claudeService.streamMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Hi',
+          callbackUrl: 'http://receiver.local/hook',
+        }),
+      );
+      // 202 goes out immediately; no SSE headers or frames are written.
+      expect(res.status).toHaveBeenCalledWith(202);
+      expect(res.json).toHaveBeenCalledWith({ accepted: true });
+      expect(res.write).not.toHaveBeenCalled();
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://receiver.local/hook',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      const [url, init] = firstFetchCall();
+      expect(JSON.parse(init.body)).toEqual({ events: EVENTS });
+      expect(url).toBe('http://receiver.local/hook');
+    });
+
+    it('chat endpoint delivers the full orchestration event stream', async () => {
+      claudeService.streamWithTools = jest
+        .fn()
+        .mockReturnValue(streamOf(EVENTS));
+      const res = createResponseMock();
+
+      await controller.chatCompletion(
+        {
+          message: 'Hi',
+          callbackUrl: 'http://receiver.local/hook',
+        },
+        res as unknown as Response,
+      );
+
+      expect(res.status).toHaveBeenCalledWith(202);
+      const [, init] = firstFetchCall();
+      expect(JSON.parse(init.body)).toEqual({ events: EVENTS });
+    });
+
+    it('delivers an error frame when generation fails midway', async () => {
+      claudeService.streamMessage.mockReturnValue(
+        streamThatThrows(new Error('upstream exploded')),
+      );
+      const res = createResponseMock();
+
+      await controller.streamCompletion(
+        {
+          message: 'Hi',
+          callbackUrl: 'http://receiver.local/hook',
+        },
+        res as unknown as Response,
+      );
+
+      const [, init] = firstFetchCall();
+      expect(JSON.parse(init.body)).toEqual({
+        events: [{ type: 'error', message: 'upstream exploded' }],
+      });
+    });
+
+    it('warns instead of throwing when the receiver is unreachable', async () => {
+      global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+      claudeService.streamMessage.mockReturnValue(streamOf(EVENTS));
+      const res = createResponseMock();
+
+      await controller.streamCompletion(
+        {
+          message: 'Hi',
+          callbackUrl: 'http://receiver.local/hook',
+        },
+        res as unknown as Response,
+      );
+
+      expect(loggerStub.warn).toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(202);
     });
   });
 });

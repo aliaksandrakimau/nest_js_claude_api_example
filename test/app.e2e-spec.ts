@@ -373,6 +373,46 @@ describe('Claude endpoints (e2e)', () => {
       .expect(400);
   });
 
+  it('POST /claude/stream with callbackUrl switches to webhook mode', () => {
+    mockCreate.mockResolvedValue(
+      fakeSdkStream([
+        {
+          type: 'message_start',
+          message: {
+            id: 'msg_1',
+            model: 'claude-haiku-4-5',
+            usage: { input_tokens: 10 },
+          },
+        },
+        {
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'Hi' },
+        },
+        {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: { output_tokens: 2 },
+        },
+        { type: 'message_stop' },
+      ]),
+    );
+
+    return request(app.getHttpServer())
+      .post('/claude/stream')
+      .send({ message: 'Hi', callbackUrl: 'http://127.0.0.1:9/hook' })
+      .expect(202)
+      .expect({ accepted: true });
+  });
+
+  it('POST /claude/stream rejects a malformed callbackUrl', () => {
+    return request(app.getHttpServer())
+      .post('/claude/stream')
+      // A bare word passes IsUrl (treated as a hostname); an empty-host
+      // scheme-only string does not.
+      .send({ message: 'Hi', callbackUrl: 'http://' })
+      .expect(400);
+  });
+
   it('GET /claude/models returns mapped models', () => {
     mockList.mockResolvedValue({
       data: [

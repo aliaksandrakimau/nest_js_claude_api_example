@@ -7,6 +7,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUrl,
   Matches,
   Max,
   Min,
@@ -84,6 +85,11 @@ export class StreamRequestDto extends ClaudeRequestOptionsDto {
   @ValidateNested({ each: true })
   @Type(() => ConversationMessageDto)
   messages?: ConversationMessageDto[];
+
+  // Webhook mode: see ChatRequestDto.callbackUrl.
+  @IsOptional()
+  @IsUrl({ require_tld: false })
+  callbackUrl?: string;
 }
 
 // Same shape as StreamRequestDto, but served by the tool-orchestrating /chat
@@ -108,4 +114,10 @@ export class ChatRequestDto extends ClaudeRequestOptionsDto {
   @IsString()
   @IsNotEmpty()
   sessionId?: string;
+
+  // Webhook mode: respond 202 immediately and POST the collected events to
+  // this URL when generation finishes, instead of holding an SSE connection.
+  @IsOptional()
+  @IsUrl({ require_tld: false })
+  callbackUrl?: string;
 }
