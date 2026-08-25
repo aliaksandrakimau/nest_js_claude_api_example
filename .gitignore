@@ -1,7 +1,7 @@
 /.idea/
-/dist/
-/node_modules/
-/.mimosa/
+dist/
+node_modules/
+.mimosa/
 /docs/
 
 # Environment files may hold ANTHROPIC_API_KEY and must never be committed.
