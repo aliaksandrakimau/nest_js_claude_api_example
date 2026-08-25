@@ -11,3 +11,7 @@
 
 # Private IntelliJ HTTP Client environment (tokens, personal overrides).
 http-client.private.env.json
+
+# OS / local tooling noise.
+.DS_Store
+.zcode/

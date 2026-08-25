@@ -405,12 +405,14 @@ describe('Claude endpoints (e2e)', () => {
   });
 
   it('POST /claude/stream rejects a malformed callbackUrl', () => {
-    return request(app.getHttpServer())
-      .post('/claude/stream')
-      // A bare word passes IsUrl (treated as a hostname); an empty-host
-      // scheme-only string does not.
-      .send({ message: 'Hi', callbackUrl: 'http://' })
-      .expect(400);
+    return (
+      request(app.getHttpServer())
+        .post('/claude/stream')
+        // A bare word passes IsUrl (treated as a hostname); an empty-host
+        // scheme-only string does not.
+        .send({ message: 'Hi', callbackUrl: 'http://' })
+        .expect(400)
+    );
   });
 
   it('GET /claude/models returns mapped models', () => {

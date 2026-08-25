@@ -19,9 +19,43 @@ npm install
 npm run start:dev
 ```
 
-The app refuses to start without `ANTHROPIC_API_KEY`. CORS is enabled for all
-origins by default. `GET /health` reports liveness for orchestrators and load
-balancers.
+The app refuses to start without at least one provider key — either
+`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. CORS is enabled for all origins by
+default. `GET /health` reports liveness for orchestrators and load balancers.
+
+### Third-party models (OpenAI-compatible endpoints)
+
+Besides Claude, the app can execute any model behind an OpenAI-compatible
+chat completions endpoint (OpenAI itself, OpenRouter, vLLM, Ollama's compat
+layer, ...). Set the key and optionally a custom base URL:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export OPENAI_BASE_URL="https://api.openai.com/v1"   # optional, this is the default
+```
+
+Routing is decided by the `model` field of any request:
+
+| `model` value          | Executed on                                    |
+| ---------------------- | ---------------------------------------------- |
+| `claude-*`             | native Anthropic Messages API                  |
+| `anthropic/<id>`       | Anthropic API, `<id>` without the prefix       |
+| `openai/<id>`          | OpenAI-compatible endpoint (requires the key)  |
+| anything else          | the configured endpoint if `OPENAI_API_KEY` is set, otherwise Anthropic |
+
+Everything else stays the same across providers: request/response shapes,
+normalized SSE events, tool calling (`tool_use` blocks are translated to
+OpenAI function calls both ways), sessions, prompts and webhook mode. Two
+endpoints are inherently Anthropic-specific: `/claude/raw-stream` rejects
+non-Claude models with `400`, and extended thinking events only ever come
+from Claude. `GET /claude/models` lists third-party models with an
+`openai/` prefix already applied, so ids can be passed back verbatim.
+
+```bash
+curl -X POST http://localhost:3000/claude/message \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Explain what NestJS is","model":"openai/gpt-4o-mini"}'
+```
 
 ### Single message
 

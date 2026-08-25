@@ -17,6 +17,9 @@ import {
 import { ClaudeService } from './claude.service';
 import { ModelRouterService } from './model-router.service';
 import { ToolRegistryService } from './tools/tool-registry.service';
+import { AnthropicProvider } from './providers/anthropic.provider';
+import { OpenAiProvider } from './providers/openai.provider';
+import { ProviderRegistryService } from './providers/provider-registry.service';
 import { PinoLogger } from 'nestjs-pino';
 import { ConfigService } from '@nestjs/config';
 import { PromptStoreService } from '../prompts/prompt-store.service';
@@ -84,6 +87,7 @@ function fakeSdkStream(events: unknown[]) {
 describe('ClaudeService', () => {
   let service: ClaudeService;
   const originalKey = process.env.ANTHROPIC_API_KEY;
+  const originalOpenAiKey = process.env.OPENAI_API_KEY;
 
   // Registry stub exposing one calculator-like tool by default.
   const toolRegistry = {
@@ -121,6 +125,7 @@ describe('ClaudeService', () => {
 
   beforeEach(async () => {
     process.env.ANTHROPIC_API_KEY = 'test-key';
+    delete process.env.OPENAI_API_KEY;
     mockCreate.mockReset();
     mockList.mockReset();
     mockDispatch.mockReset();
@@ -152,6 +157,11 @@ describe('ClaudeService', () => {
         { provide: ConversationStoreService, useValue: conversationStore },
         // Real router so heuristic behavior is covered end to end.
         ModelRouterService,
+        // Real providers over the mocked SDK / fetch so routing behavior is
+        // covered end to end as well.
+        AnthropicProvider,
+        OpenAiProvider,
+        ProviderRegistryService,
       ],
     }).compile();
 
@@ -164,6 +174,11 @@ describe('ClaudeService', () => {
     } else {
       process.env.ANTHROPIC_API_KEY = originalKey;
     }
+    if (originalOpenAiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = originalOpenAiKey;
+    }
   });
 
   describe('onModuleInit', () => {
@@ -171,7 +186,13 @@ describe('ClaudeService', () => {
       expect(() => service.onModuleInit()).not.toThrow();
     });
 
-    it('fails startup when the API key is missing', () => {
+    it('passes when only a third-party endpoint is configured', () => {
+      delete process.env.ANTHROPIC_API_KEY;
+      process.env.OPENAI_API_KEY = 'test-openai-key';
+      expect(() => service.onModuleInit()).not.toThrow();
+    });
+
+    it('fails startup when no provider key is set', () => {
       delete process.env.ANTHROPIC_API_KEY;
       expect(() => service.onModuleInit()).toThrow(/ANTHROPIC_API_KEY/);
     });
@@ -962,6 +983,124 @@ describe('ClaudeService', () => {
       await expect(service.sendMessage({ message: 'Hi' })).rejects.toBe(
         unexpected,
       );
+    });
+  });
+
+  describe('third-party model routing', () => {
+    const fetchMock = jest.fn<(...args: unknown[]) => Promise<Response>>();
+    const realFetch = global.fetch;
+
+    beforeEach(() => {
+      process.env.OPENAI_API_KEY = 'test-openai-key';
+      fetchMock.mockReset();
+      global.fetch = fetchMock;
+    });
+
+    afterEach(() => {
+      global.fetch = realFetch;
+    });
+
+    function completionResponse(): Response {
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl_1',
+          model: 'gpt-4o-mini',
+          choices: [
+            { message: { content: 'Hi there' }, finish_reason: 'stop' },
+          ],
+          usage: { prompt_tokens: 7, completion_tokens: 3 },
+        }),
+        { status: 200 },
+      );
+    }
+
+    it('routes an explicit openai/ model to the configured endpoint', async () => {
+      fetchMock.mockResolvedValue(completionResponse());
+
+      await expect(
+        service.sendMessage({ message: 'Hi', model: 'openai/gpt-4o-mini' }),
+      ).resolves.toEqual({
+        id: 'chatcmpl_1',
+        model: 'gpt-4o-mini',
+        role: 'assistant',
+        text: 'Hi there',
+        stopReason: 'end_turn',
+        usage: { inputTokens: 7, outputTokens: 3 },
+      });
+
+      // The prefix is stripped before the request leaves the app.
+      const [requestedUrl] = fetchMock.mock.calls[0] as unknown as [string];
+      expect(requestedUrl).toBe('https://api.openai.com/v1/chat/completions');
+    });
+
+    it('routes unqualified third-party ids to the configured endpoint', async () => {
+      fetchMock.mockResolvedValue(completionResponse());
+
+      await expect(
+        service.sendMessage({ message: 'Hi', model: 'gpt-4o' }),
+      ).resolves.toMatchObject({ text: 'Hi there' });
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it('keeps streaming normalized across providers', async () => {
+      const encoder = new TextEncoder();
+      fetchMock.mockResolvedValue(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    id: 'chatcmpl_2',
+                    model: 'gpt-4o-mini',
+                    choices: [{ delta: { content: 'Hello' } }],
+                  })}\n\n`,
+                ),
+              );
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    choices: [{ finish_reason: 'stop' }],
+                    usage: { prompt_tokens: 4, completion_tokens: 1 },
+                  })}\n\n`,
+                ),
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            },
+          }),
+        ),
+      );
+
+      const events = [];
+      for await (const event of service.streamMessage({
+        message: 'Hi',
+        // Explicit third-party model: without it the heuristics pick a
+        // claude model and the native provider.
+        model: 'openai/gpt-4o-mini',
+      })) {
+        events.push(event);
+      }
+      expect(events).toEqual([
+        {
+          type: 'message_start',
+          id: 'chatcmpl_2',
+          model: 'gpt-4o-mini',
+        },
+        { type: 'text_delta', text: 'Hello' },
+        {
+          type: 'message_stop',
+          stopReason: 'end_turn',
+          usage: { inputTokens: 4, outputTokens: 1 },
+        },
+      ]);
+    });
+
+    it('rejects raw-stream for a third-party model', async () => {
+      await expect(
+        service.streamRawMessage({ message: 'Hi', model: 'gpt-4o' }).next(),
+      ).rejects.toThrow(BadRequestException);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 });
