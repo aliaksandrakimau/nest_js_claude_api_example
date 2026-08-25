@@ -30,6 +30,7 @@ import {
   StreamRequestDto,
 } from './dto';
 import { ToolRegistryService } from './tools/tool-registry.service';
+import { PromptStoreService } from '../prompts/prompt-store.service';
 import type {
   ClaudeApiMessage,
   ClaudeModel,
@@ -53,6 +54,7 @@ export class ClaudeService implements OnModuleInit {
     private readonly toolRegistry: ToolRegistryService,
     private readonly logger: PinoLogger,
     private readonly config: ConfigService,
+    private readonly promptStore: PromptStoreService,
   ) {
     this.logger.setContext('ClaudeService');
   }
@@ -503,18 +505,43 @@ export class ClaudeService implements OnModuleInit {
     }
   }
 
+  // Resolves the effective system prompt: a stored prompt by name or the
+  // inline text. The two sources are mutually exclusive so callers cannot
+  // silently mix an outdated inline copy with the versioned store.
+  private resolveSystem(
+    request:
+      | ConversationRequestDto
+      | SendMessageRequestDto
+      | StreamRequestDto
+      | ChatRequestDto,
+  ): string | undefined {
+    if (request.promptName !== undefined && request.system !== undefined) {
+      throw new BadRequestException(
+        'Provide either "system" or "promptName", not both',
+      );
+    }
+    return request.promptName !== undefined
+      ? this.promptStore.get(request.promptName).text
+      : request.system;
+  }
+
   private options(
-    request: ConversationRequestDto | SendMessageRequestDto | StreamRequestDto,
+    request:
+      | ConversationRequestDto
+      | SendMessageRequestDto
+      | StreamRequestDto
+      | ChatRequestDto,
   ): {
     model: string;
     max_tokens: number;
     system?: string;
     temperature?: number;
   } {
+    const system = this.resolveSystem(request);
     return {
       model: request.model ?? DEFAULT_MODEL,
       max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
-      ...(request.system ? { system: request.system } : {}),
+      ...(system ? { system } : {}),
       ...(request.temperature !== undefined
         ? { temperature: request.temperature }
         : {}),

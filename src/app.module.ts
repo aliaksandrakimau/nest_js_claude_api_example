@@ -5,6 +5,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { ClaudeModule } from './claude/claude.module';
 import { ToolsModule } from './claude/tools/tools.module';
 import { CalculatorTool } from './claude/tools/example-tool';
+import { PromptsModule } from './prompts/prompts.module';
 import { HealthController } from './health.controller';
 
 // Pretty console output only for local development; production emits raw
@@ -32,6 +33,7 @@ const isDev =
     }),
     ClaudeModule,
     ToolsModule.forRoot([CalculatorTool]),
+    PromptsModule,
   ],
   controllers: [HealthController],
   providers: [

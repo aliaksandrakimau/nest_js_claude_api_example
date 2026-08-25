@@ -404,4 +404,78 @@ describe('Claude endpoints (e2e)', () => {
       .expect(200)
       .expect({ status: 'ok' });
   });
+
+  describe('system prompt store', () => {
+    const server = () => request(app.getHttpServer());
+
+    it('PUT /claude/prompts/:name creates and then versions the prompt', async () => {
+      const first = await server()
+        .put('/claude/prompts/style')
+        .send({ text: 'Answer in rhymes.' })
+        .expect(200);
+      expect(first.body).toMatchObject({
+        name: 'style',
+        version: 1,
+        text: 'Answer in rhymes.',
+      });
+
+      const second = await server()
+        .put('/claude/prompts/style')
+        .send({ text: 'Answer in prose.' })
+        .expect(200);
+      expect(second.body).toMatchObject({ name: 'style', version: 2 });
+
+      await server()
+        .put('/claude/prompts/empty')
+        .send({ text: '   ' })
+        .expect(400);
+    });
+
+    it('GET /claude/prompts lists stored prompts', async () => {
+      await server().put('/claude/prompts/listed').send({ text: 'Be terse.' });
+
+      const res = await server().get('/claude/prompts').expect(200);
+      expect(res.body).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'listed', text: 'Be terse.' }),
+        ]),
+      );
+    });
+
+    it('POST /claude/message resolves promptName to the stored text', async () => {
+      await server()
+        .put('/claude/prompts/brief')
+        .send({ text: 'Always answer with one word.' });
+
+      mockCreate.mockResolvedValue({
+        id: 'msg_1',
+        model: 'claude-haiku-4-5',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Ok' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 10, output_tokens: 5 },
+      });
+
+      await server()
+        .post('/claude/message')
+        .send({ message: 'Hi', promptName: 'brief' })
+        .expect(201);
+
+      expect((mockCreate.mock.calls[0] as unknown[])[0]).toMatchObject({
+        system: 'Always answer with one word.',
+      });
+    });
+
+    it('rejects an unknown promptName and the system+promptName mix', async () => {
+      await server()
+        .post('/claude/message')
+        .send({ message: 'Hi', promptName: 'ghost' })
+        .expect(400);
+
+      await server()
+        .post('/claude/message')
+        .send({ message: 'Hi', system: 'inline', promptName: 'brief' })
+        .expect(400);
+    });
+  });
 });

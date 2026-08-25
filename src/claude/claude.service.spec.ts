@@ -18,6 +18,7 @@ import { ClaudeService } from './claude.service';
 import { ToolRegistryService } from './tools/tool-registry.service';
 import { PinoLogger } from 'nestjs-pino';
 import { ConfigService } from '@nestjs/config';
+import { PromptStoreService } from '../prompts/prompt-store.service';
 
 const mockCreate = jest.fn<(...args: unknown[]) => Promise<unknown>>();
 const mockList = jest.fn<() => Promise<unknown>>();
@@ -95,6 +96,18 @@ describe('ClaudeService', () => {
     dispatch: mockDispatch,
   };
 
+  // Prompt store stub returning a recognizable text for any known name.
+  const promptStore = {
+    get: jest.fn((name: string) => ({
+      name,
+      version: 3,
+      text: ['stored text of', name].join(' '),
+      updatedAt: '2026-01-01T00:00:00Z',
+    })),
+    upsert: jest.fn(),
+    list: jest.fn(() => []),
+  };
+
   beforeEach(async () => {
     process.env.ANTHROPIC_API_KEY = 'test-key';
     mockCreate.mockReset();
@@ -124,6 +137,7 @@ describe('ClaudeService', () => {
           provide: ConfigService,
           useValue: { get: (key: string) => process.env[key] },
         },
+        { provide: PromptStoreService, useValue: promptStore },
       ],
     }).compile();
 
@@ -193,6 +207,41 @@ describe('ClaudeService', () => {
           temperature: 0.2,
         }),
       );
+    });
+
+    it('resolves promptName to the stored prompt text', async () => {
+      mockCreate.mockResolvedValue(SDK_RESPONSE);
+
+      await service.sendMessage({ message: 'Hi', promptName: 'assistant' });
+
+      expect(promptStore.get).toHaveBeenCalledWith('assistant');
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ system: 'stored text of assistant' }),
+      );
+    });
+
+    it('rejects promptName combined with inline system', async () => {
+      mockCreate.mockResolvedValue(SDK_RESPONSE);
+
+      await expect(
+        service.sendMessage({
+          message: 'Hi',
+          system: 'inline',
+          promptName: 'assistant',
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects an unknown promptName', async () => {
+      promptStore.get.mockImplementationOnce(() => {
+        throw new BadRequestException('Unknown prompt: nope');
+      });
+      mockCreate.mockResolvedValue(SDK_RESPONSE);
+
+      await expect(
+        service.sendMessage({ message: 'Hi', promptName: 'nope' }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockCreate).not.toHaveBeenCalled();
     });
   });
 

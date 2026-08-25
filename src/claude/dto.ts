@@ -31,6 +31,13 @@ export class ClaudeRequestOptionsDto {
   @IsNotEmpty()
   system?: string;
 
+  // Name of a stored system prompt (see /claude/prompts). Mutually exclusive
+  // with the inline `system` field; resolved server-side by ClaudeService.
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  promptName?: string;
+
   // The Anthropic API only accepts temperature values in the [0, 1] range.
   @IsOptional()
   @IsNumber()
