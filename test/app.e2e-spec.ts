@@ -405,6 +405,103 @@ describe('Claude endpoints (e2e)', () => {
       .expect({ status: 'ok' });
   });
 
+  describe('conversation sessions', () => {
+    const server = () => request(app.getHttpServer());
+    const FINAL_ROUND = (text: string) =>
+      fakeSdkStream([
+        {
+          type: 'message_start',
+          message: {
+            id: 'msg_s',
+            model: 'claude-haiku-4-5',
+            usage: { input_tokens: 7 },
+          },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text },
+        },
+        { type: 'content_block_stop', index: 0 },
+        {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: { output_tokens: 3 },
+        },
+        { type: 'message_stop' },
+      ]);
+
+    it('creates a session, keeps history across /chat calls and serves it back', async () => {
+      const created = await server().post('/claude/sessions').expect(201);
+      const sessionId = (created.body as { sessionId: string }).sessionId;
+      expect(sessionId).toBeTruthy();
+
+      // First turn.
+      mockCreate.mockResolvedValueOnce(FINAL_ROUND('Two plus two is four.'));
+      const first = await server()
+        .post('/claude/chat')
+        .send({ sessionId, message: 'What is 2+2?' })
+        .expect(200);
+      expect(first.text).toContain('"type":"session"');
+
+      // The stored history must now contain the completed exchange.
+      let history = await server()
+        .get(`/claude/sessions/${sessionId}`)
+        .expect(200);
+      expect((history.body as { messages: unknown[] }).messages).toEqual([
+        { role: 'user', content: 'What is 2+2?' },
+        { role: 'assistant', content: 'Two plus two is four.' },
+      ]);
+
+      // Second turn: the upstream request must replay the stored history.
+      mockCreate.mockResolvedValueOnce(FINAL_ROUND('Doubled is eight.'));
+      await server()
+        .post('/claude/chat')
+        .send({ sessionId, message: 'And doubled?' })
+        .expect(200);
+
+      expect((mockCreate.mock.calls[1] as unknown[])[0]).toMatchObject({
+        messages: [
+          { role: 'user', content: 'What is 2+2?' },
+          { role: 'assistant', content: 'Two plus two is four.' },
+          { role: 'user', content: 'And doubled?' },
+        ],
+      });
+
+      history = await server().get(`/claude/sessions/${sessionId}`).expect(200);
+      expect((history.body as { messages: unknown[] }).messages).toHaveLength(
+        4,
+      );
+    });
+
+    it('rejects unknown sessions and invalid combinations', async () => {
+      await server()
+        .post('/claude/chat')
+        .send({ sessionId: 'no-such-session', message: 'Hi' })
+        .expect(400);
+
+      await server().get('/claude/sessions/no-such-session').expect(404);
+
+      const created = await server().post('/claude/sessions').expect(201);
+      const sessionId = (created.body as { sessionId: string }).sessionId;
+
+      await server()
+        .post('/claude/chat')
+        .send({
+          sessionId,
+          messages: [{ role: 'user', content: 'Hi' }],
+        })
+        .expect(400);
+
+      await server().post('/claude/chat').send({ sessionId }).expect(400);
+    });
+  });
+
   describe('system prompt store', () => {
     const server = () => request(app.getHttpServer());
 

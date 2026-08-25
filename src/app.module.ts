@@ -6,6 +6,7 @@ import { ClaudeModule } from './claude/claude.module';
 import { ToolsModule } from './claude/tools/tools.module';
 import { CalculatorTool } from './claude/tools/example-tool';
 import { PromptsModule } from './prompts/prompts.module';
+import { ConversationsModule } from './conversations/conversations.module';
 import { HealthController } from './health.controller';
 
 // Pretty console output only for local development; production emits raw
@@ -34,6 +35,7 @@ const isDev =
     ClaudeModule,
     ToolsModule.forRoot([CalculatorTool]),
     PromptsModule,
+    ConversationsModule,
   ],
   controllers: [HealthController],
   providers: [

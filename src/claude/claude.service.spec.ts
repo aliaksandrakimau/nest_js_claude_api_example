@@ -19,6 +19,7 @@ import { ToolRegistryService } from './tools/tool-registry.service';
 import { PinoLogger } from 'nestjs-pino';
 import { ConfigService } from '@nestjs/config';
 import { PromptStoreService } from '../prompts/prompt-store.service';
+import { ConversationStoreService } from '../conversations/conversation-store.service';
 
 const mockCreate = jest.fn<(...args: unknown[]) => Promise<unknown>>();
 const mockList = jest.fn<() => Promise<unknown>>();
@@ -108,6 +109,15 @@ describe('ClaudeService', () => {
     list: jest.fn(() => []),
   };
 
+  // Conversation store stub with an in-memory session implementation.
+  const conversationStore = {
+    createSession: jest.fn(() => 'sess_1'),
+    getHistory: jest.fn(
+      () => [] as { role: 'user' | 'assistant'; content: string }[],
+    ),
+    appendTurn: jest.fn(),
+  };
+
   beforeEach(async () => {
     process.env.ANTHROPIC_API_KEY = 'test-key';
     mockCreate.mockReset();
@@ -138,6 +148,7 @@ describe('ClaudeService', () => {
           useValue: { get: (key: string) => process.env[key] },
         },
         { provide: PromptStoreService, useValue: promptStore },
+        { provide: ConversationStoreService, useValue: conversationStore },
       ],
     }).compile();
 

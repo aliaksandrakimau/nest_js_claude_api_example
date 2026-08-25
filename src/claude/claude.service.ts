@@ -31,6 +31,7 @@ import {
 } from './dto';
 import { ToolRegistryService } from './tools/tool-registry.service';
 import { PromptStoreService } from '../prompts/prompt-store.service';
+import { ConversationStoreService } from '../conversations/conversation-store.service';
 import type {
   ClaudeApiMessage,
   ClaudeModel,
@@ -55,6 +56,7 @@ export class ClaudeService implements OnModuleInit {
     private readonly logger: PinoLogger,
     private readonly config: ConfigService,
     private readonly promptStore: PromptStoreService,
+    private readonly conversationStore: ConversationStoreService,
   ) {
     this.logger.setContext('ClaudeService');
   }
@@ -196,6 +198,9 @@ export class ClaudeService implements OnModuleInit {
   // stop_reason 'tool_use', run every requested tool through the registry,
   // append assistant + tool_result turns to the history and start the next
   // round. The final message_stop carries usage summed across all rounds.
+  // With a sessionId the history lives server-side: stored turns are loaded
+  // up front and the completed exchange is appended afterwards, so clients
+  // only ever send the newest message.
   async *streamWithTools(
     request: ChatRequestDto,
   ): AsyncGenerator<ClaudeStreamEvent> {
@@ -209,10 +214,28 @@ export class ClaudeService implements OnModuleInit {
         'Provide either "message" or "messages", not both',
       );
     }
+    const sessionId = request.sessionId;
+    if (sessionId !== undefined) {
+      if (request.messages !== undefined) {
+        throw new BadRequestException(
+          'Do not combine "sessionId" with "messages"; the history is kept server-side',
+        );
+      }
+      if (request.message === undefined) {
+        throw new BadRequestException('"sessionId" requires a "message"');
+      }
+    }
 
-    const messages: ClaudeApiMessage[] = request.messages ?? [
-      { role: 'user', content: request.message ?? '' },
-    ];
+    let messages: ClaudeApiMessage[];
+    if (sessionId !== undefined) {
+      const history = this.conversationStore.getHistory(sessionId);
+      messages = [...history, { role: 'user', content: request.message! }];
+      yield { type: 'session', sessionId };
+    } else {
+      messages = request.messages ?? [
+        { role: 'user', content: request.message ?? '' },
+      ];
+    }
     const tools = this.toolRegistry.getToolDefinitions();
 
     let totalInputTokens = 0;
@@ -345,6 +368,24 @@ export class ClaudeService implements OnModuleInit {
         }
 
         if (stopReason !== 'tool_use' || pendingToolCalls.length === 0) {
+          // Persist the exchange so the next request with this sessionId
+          // continues the conversation.
+          if (sessionId !== undefined && request.message !== undefined) {
+            const finalText = assistantBlocks
+              .filter(
+                (
+                  block,
+                ): block is Extract<ContentBlockParam, { type: 'text' }> =>
+                  block.type === 'text',
+              )
+              .map((block) => block.text)
+              .join('');
+            this.conversationStore.appendTurn(
+              sessionId,
+              request.message,
+              finalText,
+            );
+          }
           this.logger.info(
             {
               rounds: round + 1,

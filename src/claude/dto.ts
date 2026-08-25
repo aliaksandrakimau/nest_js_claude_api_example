@@ -87,8 +87,8 @@ export class StreamRequestDto extends ClaudeRequestOptionsDto {
 }
 
 // Same shape as StreamRequestDto, but served by the tool-orchestrating /chat
-// endpoint. Kept as a distinct class so the two endpoints can diverge later
-// (e.g. per-request tool selection) without breaking the stream contract.
+// endpoint and session-aware. Kept as a distinct class so the two endpoints
+// can diverge further without breaking the stream contract.
 export class ChatRequestDto extends ClaudeRequestOptionsDto {
   @ValidateIf((o: ChatRequestDto) => o.messages === undefined)
   @IsString()
@@ -100,4 +100,12 @@ export class ChatRequestDto extends ClaudeRequestOptionsDto {
   @ValidateNested({ each: true })
   @Type(() => ConversationMessageDto)
   messages?: ConversationMessageDto[];
+
+  // When set, history is kept server-side (see /claude/sessions) and the
+  // client sends only the new message. Requires `message`, forbids
+  // `messages` — enforced in ClaudeService.
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  sessionId?: string;
 }

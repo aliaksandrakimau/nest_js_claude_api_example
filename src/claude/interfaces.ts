@@ -25,6 +25,7 @@ export interface ClaudeResponse {
 // are included so the normalized stream can serve as a complete protocol view.
 export type ClaudeStreamEvent =
   | { type: 'message_start'; id: string; model: string }
+  | { type: 'session'; sessionId: string }
   | { type: 'text_delta'; text: string }
   | { type: 'tool_use_start'; id: string; name: string }
   | { type: 'tool_use_delta'; partialJson: string }
