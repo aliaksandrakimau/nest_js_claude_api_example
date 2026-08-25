@@ -30,6 +30,7 @@ import {
   StreamRequestDto,
 } from './dto';
 import { ToolRegistryService } from './tools/tool-registry.service';
+import { ModelRouterService } from './model-router.service';
 import { PromptStoreService } from '../prompts/prompt-store.service';
 import { ConversationStoreService } from '../conversations/conversation-store.service';
 import type {
@@ -41,7 +42,6 @@ import type {
   UpstreamStream,
 } from './interfaces';
 
-const DEFAULT_MODEL = 'claude-haiku-4-5';
 const DEFAULT_MAX_TOKENS = 1000;
 // Safety bound for the tool orchestration loop: a misbehaving model that
 // keeps requesting tools cannot spin the conversation forever.
@@ -57,6 +57,7 @@ export class ClaudeService implements OnModuleInit {
     private readonly config: ConfigService,
     private readonly promptStore: PromptStoreService,
     private readonly conversationStore: ConversationStoreService,
+    private readonly modelRouter: ModelRouterService,
   ) {
     this.logger.setContext('ClaudeService');
   }
@@ -580,13 +581,40 @@ export class ClaudeService implements OnModuleInit {
   } {
     const system = this.resolveSystem(request);
     return {
-      model: request.model ?? DEFAULT_MODEL,
+      // The router keeps an explicit model override; otherwise it picks the
+      // model from input heuristics (see ModelRouterService).
+      model: this.modelRouter.selectModel(
+        request.model,
+        this.inputTextOf(request),
+      ),
       max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
       ...(system ? { system } : {}),
       ...(request.temperature !== undefined
         ? { temperature: request.temperature }
         : {}),
     };
+  }
+
+  // Flattens whatever text the request carries into one string for the
+  // router heuristics. `in`-narrowing because not every DTO has both fields.
+  private inputTextOf(
+    request:
+      | ConversationRequestDto
+      | SendMessageRequestDto
+      | StreamRequestDto
+      | ChatRequestDto,
+  ): string {
+    if ('message' in request && typeof request.message === 'string') {
+      return request.message;
+    }
+    if ('messages' in request && Array.isArray(request.messages)) {
+      return request.messages
+        .map((message) =>
+          typeof message.content === 'string' ? message.content : '',
+        )
+        .join(' ');
+    }
+    return '';
   }
 
   // Translate SDK failures into meaningful HTTP responses instead of leaking

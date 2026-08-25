@@ -15,6 +15,7 @@ import {
   RateLimitError,
 } from '@anthropic-ai/sdk';
 import { ClaudeService } from './claude.service';
+import { ModelRouterService } from './model-router.service';
 import { ToolRegistryService } from './tools/tool-registry.service';
 import { PinoLogger } from 'nestjs-pino';
 import { ConfigService } from '@nestjs/config';
@@ -149,6 +150,8 @@ describe('ClaudeService', () => {
         },
         { provide: PromptStoreService, useValue: promptStore },
         { provide: ConversationStoreService, useValue: conversationStore },
+        // Real router so heuristic behavior is covered end to end.
+        ModelRouterService,
       ],
     }).compile();
 
@@ -253,6 +256,18 @@ describe('ClaudeService', () => {
         service.sendMessage({ message: 'Hi', promptName: 'nope' }),
       ).rejects.toThrow(BadRequestException);
       expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it('routes complex inputs to a heavier model when none is set', async () => {
+      mockCreate.mockResolvedValue(SDK_RESPONSE);
+
+      await service.sendMessage({
+        message: 'Please refactor this module and review the architecture',
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'claude-sonnet-4-5' }),
+      );
     });
   });
 
