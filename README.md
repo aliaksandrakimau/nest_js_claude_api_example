@@ -153,6 +153,24 @@ carry the same fields. In development (`NODE_ENV` neither `production` nor
 `test`) output is pretty-printed; production emits raw NDJSON ready for log
 shippers. Tune verbosity with the usual pino levels if needed.
 
+## Extras
+
+- **System prompt store** — `PUT /claude/prompts/:name` stores a system prompt
+  (versions auto-increment), `GET /claude/prompts[/:name]` reads them. Any
+  request may carry `promptName` to use a stored prompt instead of inline
+  `system`; combining both is rejected with `400`.
+- **Conversation sessions** — `POST /claude/sessions` creates a session;
+  `/claude/chat` accepts `sessionId` to keep history server-side (30 min
+  sliding TTL), so clients send only the newest message. The stream starts
+  with a `{type:"session"}` frame; history is readable via
+  `GET /claude/sessions/:id`.
+- **Webhook mode** — add `callbackUrl` to `/claude/stream` or `/claude/chat`
+  to get an immediate `202 {accepted:true}` while generation runs in the
+  background; the collected events are POSTed to the URL when done.
+- **Model routing** — when no explicit `model` is set, inputs over ~2000
+  chars or containing complexity keywords are routed from Haiku to Sonnet;
+  routing decisions appear in debug logs.
+
 ## Probing endpoints from IntelliJ IDEA
 
 `requests.http` contains ready-to-run requests for the Claude endpoints
